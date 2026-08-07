@@ -80,8 +80,19 @@ export interface ProgressEvent {
   cached: boolean;
 }
 
+/** A document bookmark whose target is an anchor name from pass 1 — the
+ * orchestrator resolves it to an absolute page at assembly time. */
+export interface OutlineSpec {
+  title: string;
+  anchor: string;
+  /** Nesting depth (child = parent + 1). Default 0. */
+  level?: number;
+}
+
 export interface GenerateOptions {
   outputPath: string;
+  /** Bookmarks (/Outlines) for the assembled document. */
+  outline?: OutlineSpec[];
   /** Shard cache + resume manifest location. Default: `<outputPath>.shardcache` */
   cacheDir?: string;
   /** Scheduler budget against pageEstimate hints. Default: 500. */

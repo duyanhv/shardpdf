@@ -111,6 +111,54 @@ test("cross-shard links resolve to defined named destinations", async (t) => {
   }
 });
 
+test("anchor-referenced outlines land in the document", async (t) => {
+  if (!(await qpdfAvailable())) return t.skip("qpdf not installed");
+  const outputPath = path.join(workDir, "outline.pdf");
+  await generate(testPlan(), {
+    outputPath,
+    maxPagesPerShard: 4,
+    outline: [
+      { title: "Section A", anchor: "sec:a" },
+      { title: "동호수 b", anchor: "sec:b", level: 1 },
+      { title: "Section C", anchor: "sec:c" },
+    ],
+  });
+  const qdfPath = `${outputPath}.qdf`;
+  await execFileP("qpdf", [
+    "--qdf",
+    "--object-streams=disable",
+    outputPath,
+    qdfPath,
+  ]);
+  const text = await import("node:fs/promises").then((fs) =>
+    fs.readFile(qdfPath, "latin1"),
+  );
+  assert.ok(text.includes("/Outlines"), "catalog has /Outlines");
+  assert.ok(text.includes("(Section A)"), "ascii bookmark title present");
+  assert.match(text, /\/Count 3/, "root count covers all entries");
+});
+
+test("an outline referencing an unknown anchor fails loudly", async () => {
+  await assert.rejects(
+    generate(testPlan(), {
+      outputPath: path.join(workDir, "bad-outline.pdf"),
+      maxPagesPerShard: 4,
+      outline: [{ title: "ghost", anchor: "sec:nope" }],
+    }),
+    /unknown anchor "sec:nope"/,
+  );
+});
+
+test("an empty outline is treated as no bookmarks", async () => {
+  const outputPath = path.join(workDir, "empty-outline.pdf");
+  await generate(testPlan(), {
+    outputPath,
+    maxPagesPerShard: 4,
+    outline: [],
+  });
+  assert.ok((await stat(outputPath)).size > 0);
+});
+
 test("a crashed run resumes from the shard cache", async () => {
   const outputPath = path.join(workDir, "resume.pdf");
   const cacheDir = path.join(workDir, "resume-cache");

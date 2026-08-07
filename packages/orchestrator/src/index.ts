@@ -15,6 +15,7 @@ export type {
   GlobalContext,
   MeasureContext,
   MeasureResult,
+  OutlineSpec,
   ProgressEvent,
   RendererAdapter,
   SectionSpec,

@@ -8,11 +8,7 @@
 use lopdf::{Object, ObjectId, Stream};
 use std::io::{Result, Write};
 
-pub fn write_indirect_object(
-    w: &mut impl Write,
-    id: ObjectId,
-    object: &Object,
-) -> Result<()> {
+pub fn write_indirect_object(w: &mut impl Write, id: ObjectId, object: &Object) -> Result<()> {
     writeln!(w, "{} {} obj", id.0, id.1)?;
     write_object(w, object)?;
     w.write_all(b"\nendobj\n")

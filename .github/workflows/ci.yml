@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - name: Test the pure-Rust core used by cargo-fuzz
+        run: cargo test --manifest-path crates/core/Cargo.toml --no-default-features
+
+  prebuild:
+    name: Prebuild ${{ matrix.target }}
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: macos-latest
+            target: x86_64-apple-darwin
+            build_args: ""
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            build_args: ""
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            build_args: --use-napi-cross
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            build_args: --use-napi-cross
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            build_args: ""
+          - host: windows-latest
+            target: aarch64-pc-windows-msvc
+            build_args: ""
+    runs-on: ${{ matrix.host }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: bun install --frozen-lockfile
+      - name: Build native binding
+        working-directory: crates/core
+        shell: bash
+        run: bun run build:release --target ${{ matrix.target }} ${{ matrix.build_args }}
+      - name: Upload native binding
+        uses: actions/upload-artifact@v7
+        with:
+          name: bindings-${{ matrix.target }}
+          path: crates/core/shardpdf-core.*.node
+          if-no-files-found: error

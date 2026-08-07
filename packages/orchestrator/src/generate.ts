@@ -152,6 +152,17 @@ export async function generate<TData>(
     }),
   );
 
+  // Resolve anchor-referenced bookmarks against pass-1 anchors.
+  const outlineEntries = options.outline?.map((spec) => {
+    const page = anchorPages[spec.anchor];
+    if (page === undefined) {
+      throw new Error(
+        `outline entry "${spec.title}" references unknown anchor "${spec.anchor}"`,
+      );
+    }
+    return { title: spec.title, pageIndex: page - 1, level: spec.level ?? 0 };
+  });
+
   // Assemble — and enforce the determinism contract with real page counts.
   signal?.throwIfAborted();
   const partialPath = `${options.outputPath}.partial`;
@@ -175,7 +186,7 @@ export async function generate<TData>(
         cached: false,
       });
     });
-    assembly.finalize();
+    assembly.finalize(outlineEntries);
   } catch (err) {
     await rm(partialPath, { force: true });
     throw err;
