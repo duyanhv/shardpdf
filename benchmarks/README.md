@@ -9,7 +9,9 @@ for the canonical document every runner must produce, and the design spec in
 
 - `workload/` — deterministic data generator + reference layout (the manual two-pass)
 - `runners/` — one per contestant: `pdf-lib`, `pdfkit`, `react-pdf`, `merge`
-  (pdfkit shards + pdf-merger-js bind — the workaround teams use today)
+  (pdfkit shards + pdf-merger-js bind — the workaround teams use today), and
+  `shardpdf` (same shards bound with `@shardpdf/core`; build it first with
+  `bun run --cwd crates/core build`)
 - `harness/` — spawns runners under Node, samples peak RSS, validates with qpdf,
   writes JSON into `results/`
 - `results/` — committed evidence; `out/` — generated PDFs, gitignored

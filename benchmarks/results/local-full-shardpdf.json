@@ -1,0 +1,29 @@
+{
+  "runner": "shardpdf",
+  "scale": "full",
+  "outcome": "ok",
+  "peakRssBytes": 790216704,
+  "wallTimeMs": 18816,
+  "outputBytes": 22646151,
+  "pageCountReported": 11164,
+  "pageCountActual": 11164,
+  "qpdf": "pass",
+  "linkCheck": "pass",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "machine": {
+    "tag": "local",
+    "node": "v24.14.0",
+    "platform": "darwin"
+  },
+  "versions": {
+    "pdf-lib": "1.17.1",
+    "pdfkit": "0.19.1",
+    "@react-pdf/renderer": "4.5.1",
+    "pdf-merger-js": "5.1.2"
+  },
+  "timestamp": "2026-08-07T07:38:19.353Z",
+  "notes": []
+}

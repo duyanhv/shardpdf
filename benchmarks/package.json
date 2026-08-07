@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@react-pdf/renderer": "^4.5.1",
+    "@shardpdf/core": "workspace:*",
     "pdf-lib": "^1.17.1",
     "pdf-merger-js": "^5.1.2",
     "pdfkit": "^0.19.1",

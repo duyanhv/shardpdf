@@ -21,7 +21,13 @@ import { SCALES, type ScaleName } from "../workload/data.ts";
 const execFileP = promisify(execFile);
 
 const BENCH_DIR = path.resolve(import.meta.dirname, "..");
-const RUNNERS = ["pdf-lib", "pdfkit", "react-pdf", "merge"] as const;
+const RUNNERS = [
+  "pdf-lib",
+  "pdfkit",
+  "react-pdf",
+  "merge",
+  "shardpdf",
+] as const;
 type RunnerName = (typeof RUNNERS)[number];
 
 const MEASURED_LIBS = [

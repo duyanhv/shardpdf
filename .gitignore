@@ -1,5 +1,7 @@
 node_modules/
 .turbo/
 dist/
+target/
+*.node
 benchmarks/out/
 *.log
