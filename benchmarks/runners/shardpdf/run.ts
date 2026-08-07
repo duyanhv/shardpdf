@@ -1,12 +1,11 @@
 /**
  * shardpdf runner: identical sharded pdfkit rendering to the merge runner,
  * but bound with @shardpdf/core (Rust, lopdf) instead of pdf-merger-js.
- * The claim under test: cross-shard named destinations survive the bind
- * (linkCheck=pass where pdf-merger-js fails).
- *
- * v0 core is correctness-first, NOT yet streaming — the output document
- * accumulates in Rust memory at bind time. Memory numbers are real but do not
- * yet represent the final O(largest shard) design.
+ * The claims under test: cross-shard named destinations survive the bind
+ * (linkCheck=pass where pdf-merger-js fails), and the bind's working set is
+ * one shard — the core streams every shard object to disk as it is parsed.
+ * Whole-runner RSS is dominated by the JS side (layout precompute + pdfkit
+ * rendering); see docs/benchmarks for the isolated bind-only measurement.
  */
 
 import { mkdtemp, rm } from "node:fs/promises";

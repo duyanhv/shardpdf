@@ -2,9 +2,9 @@
   "runner": "shardpdf",
   "scale": "mid",
   "outcome": "ok",
-  "peakRssBytes": 260898816,
-  "wallTimeMs": 1159,
-  "outputBytes": 2284558,
+  "peakRssBytes": 320913408,
+  "wallTimeMs": 1291,
+  "outputBytes": 2387386,
   "pageCountReported": 1144,
   "pageCountActual": 1144,
   "qpdf": "pass",
@@ -24,6 +24,6 @@
     "@react-pdf/renderer": "4.5.1",
     "pdf-merger-js": "5.1.2"
   },
-  "timestamp": "2026-08-07T07:37:37.084Z",
+  "timestamp": "2026-08-07T07:50:37.919Z",
   "notes": []
 }
