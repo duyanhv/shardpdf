@@ -1,0 +1,219 @@
+import { rename, rm } from "node:fs/promises";
+import { availableParallelism } from "node:os";
+import { isAbsolute, resolve as resolvePath } from "node:path";
+import { Assembly } from "@shardpdf/core";
+import { DeterminismError, DuplicateAnchorError } from "./errors.ts";
+import { contentHash } from "./hash.ts";
+import { ShardCache } from "./manifest.ts";
+import { WorkerPool } from "./pool.ts";
+import { partition } from "./scheduler.ts";
+import type {
+  AdapterRef,
+  DocumentPlan,
+  GenerateOptions,
+  GenerateResult,
+  GlobalContext,
+  MeasureResult,
+  ProgressEvent,
+  Shard,
+} from "./types.ts";
+
+/**
+ * Two-pass generation (design spec §Two-pass protocol):
+ *
+ *  1. measure — every shard reports { pageCount, anchors } from an isolated
+ *     worker; results are cached in the resume manifest.
+ *  2. render  — every shard renders with the global context (page offset,
+ *     total pages, anchor→page map), so cross-shard literals are correct at
+ *     the source. Outputs land in the shard cache.
+ *  3. assemble — @shardpdf/core streams the shards into one PDF. The page
+ *     count it reports per shard MUST match pass 1 (determinism contract).
+ */
+export async function generate<TData>(
+  plan: DocumentPlan<TData>,
+  options: GenerateOptions,
+): Promise<GenerateResult> {
+  const signal = options.signal;
+  signal?.throwIfAborted();
+
+  const adapter: AdapterRef = {
+    module: isAbsolute(plan.adapter.module)
+      ? plan.adapter.module
+      : resolvePath(plan.adapter.module),
+    ...(plan.adapter.export !== undefined && { export: plan.adapter.export }),
+  };
+  const shards = partition(
+    { ...plan, adapter },
+    options.maxPagesPerShard ?? 500,
+  );
+  if (shards.length === 0) {
+    throw new RangeError("plan has no sections");
+  }
+
+  const cache = new ShardCache(
+    options.cacheDir ?? `${options.outputPath}.shardcache`,
+  );
+  await cache.open();
+
+  const pool = new WorkerPool({
+    concurrency:
+      options.concurrency ??
+      Math.min(4, Math.max(1, availableParallelism() - 1)),
+    retries: options.retries ?? 1,
+    ...(signal !== undefined && { signal }),
+  });
+
+  const emit = (event: ProgressEvent): void => options.onProgress?.(event);
+
+  // Pass 1 — measure (cache-aware, all shards concurrent under the pool cap).
+  let measured = 0;
+  const measures = await Promise.all(
+    shards.map(async (shard): Promise<MeasureResult> => {
+      const key = measureKey(adapter, shard);
+      const cachedResult = cache.getMeasure(key);
+      const result =
+        cachedResult ??
+        ((await pool.run({
+          kind: "measure",
+          adapter,
+          shard: shard as Shard,
+          ctx: { shardIndex: shard.index },
+        })) as MeasureResult);
+      if (cachedResult === undefined) await cache.putMeasure(key, result);
+      measured++;
+      emit({
+        phase: "measure",
+        shardIndex: shard.index,
+        done: measured,
+        total: shards.length,
+        cached: cachedResult !== undefined,
+      });
+      return result;
+    }),
+  );
+
+  // Global context: offsets, totals, anchor map (1-based page numbers).
+  const pageOffsets: number[] = [];
+  let totalPages = 0;
+  for (const measure of measures) {
+    pageOffsets.push(totalPages);
+    totalPages += measure.pageCount;
+  }
+  const anchorPages: Record<string, number> = {};
+  const anchorOwner = new Map<string, number>();
+  measures.forEach((measure, shardIndex) => {
+    const offset = pageOffsets[shardIndex] ?? 0;
+    for (const anchor of measure.anchors) {
+      const owner = anchorOwner.get(anchor.name);
+      if (owner !== undefined) {
+        throw new DuplicateAnchorError(anchor.name, owner, shardIndex);
+      }
+      anchorOwner.set(anchor.name, shardIndex);
+      anchorPages[anchor.name] = offset + anchor.pageIndexInShard + 1;
+    }
+  });
+
+  // Pass 2 — render with global context (cache-aware).
+  let rendered = 0;
+  let renderedFresh = 0;
+  const shardFiles = await Promise.all(
+    shards.map(async (shard): Promise<string> => {
+      const ctx: Omit<GlobalContext, "outputPath"> = {
+        shardIndex: shard.index,
+        pageOffset: pageOffsets[shard.index] ?? 0,
+        totalPages,
+        anchorPages,
+      };
+      const key = renderKey(adapter, shard, ctx);
+      const cachedRender = await cache.getRender(key);
+      let file: string;
+      if (cachedRender !== undefined) {
+        file = cachedRender.file;
+      } else {
+        file = cache.renderPath(key);
+        await pool.run({
+          kind: "render",
+          adapter,
+          shard: shard as Shard,
+          ctx: { ...ctx, outputPath: file },
+        });
+        await cache.putRender(key, measures[shard.index]?.pageCount ?? 0);
+        renderedFresh++;
+      }
+      rendered++;
+      emit({
+        phase: "render",
+        shardIndex: shard.index,
+        done: rendered,
+        total: shards.length,
+        cached: cachedRender !== undefined,
+      });
+      return file;
+    }),
+  );
+
+  // Assemble — and enforce the determinism contract with real page counts.
+  signal?.throwIfAborted();
+  const partialPath = `${options.outputPath}.partial`;
+  const assembly = new Assembly(partialPath);
+  try {
+    shards.forEach((shard, i) => {
+      signal?.throwIfAborted();
+      const file = shardFiles[i];
+      if (file === undefined)
+        throw new Error("unreachable: missing shard file");
+      const actual = assembly.appendShard(file);
+      const expected = measures[i]?.pageCount;
+      if (actual !== expected) {
+        throw new DeterminismError(shard.index, expected ?? -1, actual);
+      }
+      emit({
+        phase: "assemble",
+        shardIndex: shard.index,
+        done: i + 1,
+        total: shards.length,
+        cached: false,
+      });
+    });
+    assembly.finalize();
+  } catch (err) {
+    await rm(partialPath, { force: true });
+    throw err;
+  }
+  await rename(partialPath, options.outputPath);
+
+  if (options.keepCache !== true) {
+    await cache.destroy();
+  }
+
+  return {
+    outputPath: options.outputPath,
+    totalPages,
+    shardCount: shards.length,
+    renderedShards: renderedFresh,
+    cachedShards: shards.length - renderedFresh,
+  };
+}
+
+function measureKey(adapter: AdapterRef, shard: Shard<unknown>): string {
+  return contentHash({
+    v: 1,
+    kind: "measure",
+    adapter,
+    sections: shard.sections,
+  });
+}
+
+function renderKey(
+  adapter: AdapterRef,
+  shard: Shard<unknown>,
+  ctx: Omit<GlobalContext, "outputPath">,
+): string {
+  return contentHash({
+    v: 1,
+    kind: "render",
+    adapter,
+    sections: shard.sections,
+    ctx,
+  });
+}
