@@ -163,6 +163,18 @@ impl Assembly {
     /// Writes the unified page tree, optional /Outlines tree, catalog (with
     /// merged name tree), xref table and trailer. Consumes the assembly.
     pub fn finalize(mut self, outline: Option<&[OutlineEntry]>) -> Result<()> {
+        self.named_dests.sort_by(|a, b| a.0.cmp(&b.0));
+        if let Some(duplicate) = self
+            .named_dests
+            .windows(2)
+            .find(|pair| pair[0].0 == pair[1].0)
+        {
+            return Err(AssemblyError::Malformed(format!(
+                "duplicate named destination {:?}",
+                String::from_utf8_lossy(&duplicate[0].0)
+            )));
+        }
+
         let pages = Object::Dictionary(dictionary! {
             "Type" => "Pages",
             "Count" => self.page_ids.len() as i64,
@@ -196,7 +208,6 @@ impl Assembly {
             catalog.set("PageMode", Object::Name(b"UseOutlines".to_vec()));
         }
         if !self.named_dests.is_empty() {
-            self.named_dests.sort_by(|a, b| a.0.cmp(&b.0));
             let mut names: Vec<Object> = Vec::with_capacity(self.named_dests.len() * 2);
             for (name, dest) in std::mem::take(&mut self.named_dests) {
                 names.push(Object::String(name, StringFormat::Literal));
@@ -516,6 +527,22 @@ mod tests {
                 String::from_utf8_lossy(name)
             );
         }
+    }
+
+    #[test]
+    fn duplicate_named_destinations_are_rejected() {
+        let out = std::env::temp_dir().join("shardpdf-core-test-duplicate-dest.pdf");
+        let mut assembly = Assembly::new(&out).unwrap();
+        assembly.append_shard_doc(make_shard(1, "dup")).unwrap();
+        assembly.append_shard_doc(make_shard(1, "dup")).unwrap();
+        let result = assembly.finalize(None);
+        std::fs::remove_file(&out).ok();
+
+        assert!(matches!(
+            result,
+            Err(AssemblyError::Malformed(message))
+                if message.contains("duplicate named destination")
+        ));
     }
 
     /// CI-friendly cousin of the cargo-fuzz harness: mutated/truncated valid

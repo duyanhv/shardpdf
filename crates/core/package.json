@@ -16,13 +16,15 @@
     ]
   },
   "scripts": {
-    "build": "napi build --platform",
-    "build:release": "napi build --platform --release",
+    "build": "napi build --platform --js native.js --dts native.d.ts",
+    "build:release": "napi build --platform --release --js native.js --dts native.d.ts",
     "fuzz": "rustup run nightly cargo fuzz run append_shard --fuzz-dir fuzz",
     "fuzz:seed": "cargo run --example gen_fuzz_seed",
-    "test": "cargo test -p shardpdf-core"
+    "test": "cargo test -p shardpdf-core && node --test \"test/*.test.js\"",
+    "typecheck": "tsc --noEmit --allowJs --checkJs --module nodenext --moduleResolution nodenext --target es2022 --types node index.js test/api.test.js test/api-types.ts"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^3.8.2"
+    "@napi-rs/cli": "^3.8.2",
+    "@types/node": "^24"
   }
 }

@@ -82,6 +82,9 @@ The original MVP milestones are complete on `main`:
 - Named-destination preservation across PDFKit shards.
 - Streaming writer with a one-shard working set.
 - Native outline generation, including nested outline levels.
+- Typed high-level `assemble()` API with atomic promotion, deterministic
+  partial cleanup, and between-shard cancellation; low-level `Assembly` remains
+  available and now supports explicit `abort()`.
 - Two-pass TypeScript orchestrator with isolated workers.
 - Disk resume manifest, progress events, cancellation, and deterministic page-count enforcement.
 - RSS soak test demonstrating that orchestrator memory follows shard size rather than document size.
@@ -97,7 +100,6 @@ Still unproven or unimplemented:
 - Confirmation on a real `t3.small`; the current constrained result is a Docker simulation.
 - Linux musl prebuilds and an explicit Node/Bun runtime compatibility matrix.
 - A public package release and consumer installation test.
-- A first-class single-pass pipeline API above the low-level `Assembly` binding.
 - Page-range extraction, which is required before applications such as Floor Inspector can remove
   their qpdf runtime dependency.
 
@@ -308,10 +310,16 @@ claims are backed by a direct qpdf comparison.
 
 ### Phase 2 — harden the core for consumers
 
-- Add an ergonomic single-pass `assemble` API while retaining incremental append.
-- Guarantee partial-file cleanup and atomic final-file promotion in the high-level API.
-- Define cancellation behavior between shard appends.
-- Add metadata parity tests and explicit unsupported-input errors.
+- Add an ergonomic single-pass `assemble` API while retaining incremental
+  append. **Complete locally.**
+- Guarantee partial-file cleanup and atomic final-file promotion in the
+  high-level API. **Complete locally and covered by Node tests.**
+- Define cancellation behavior between shard appends. **Complete locally:** an
+  in-flight native append completes, then the signal is observed before the
+  next append or finalization.
+- Add metadata parity tests and explicit unsupported-input errors. Duplicate
+  named destinations are now rejected explicitly; broader metadata parity is
+  still pending.
 - Add Linux musl builds plus Node and Bun load/smoke tests for every supported target.
 - Publish prerelease packages and test installation outside the monorepo.
 

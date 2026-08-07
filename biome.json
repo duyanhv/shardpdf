@@ -9,8 +9,8 @@
     "includes": [
       "**",
       "!**/results",
-      "!crates/core/index.js",
-      "!crates/core/index.d.ts"
+      "!crates/core/native.js",
+      "!crates/core/native.d.ts"
     ]
   },
   "formatter": {

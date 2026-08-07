@@ -52,6 +52,15 @@ impl Assembly {
             .page_count() as u32)
     }
 
+    /// Closes the partial output without finalizing it. Consumed.
+    #[napi]
+    pub fn abort(&mut self) -> napi::Result<()> {
+        self.inner
+            .take()
+            .ok_or_else(|| napi::Error::from_reason("assembly already finalized"))?;
+        Ok(())
+    }
+
     /// Writes the assembled document, with optional bookmarks. Consumed.
     #[napi]
     pub fn finalize(&mut self, outline: Option<Vec<OutlineEntry>>) -> napi::Result<()> {
