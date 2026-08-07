@@ -33,6 +33,18 @@
         "@napi-rs/cli": "^3.8.2",
       },
     },
+    "packages/orchestrator": {
+      "name": "@shardpdf/orchestrator",
+      "version": "0.1.0",
+      "dependencies": {
+        "@shardpdf/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "^24",
+        "@types/pdfkit": "^0.17.6",
+        "pdfkit": "^0.19.1",
+      },
+    },
   },
   "packages": {
     "@babel/runtime": ["@babel/runtime@7.29.7", "", {}, "sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw=="],
@@ -256,6 +268,8 @@
     "@react-pdf/types": ["@react-pdf/types@2.11.1", "", { "dependencies": { "@react-pdf/font": "^4.0.8", "@react-pdf/primitives": "^4.3.0", "@react-pdf/stylesheet": "^6.2.1" } }, "sha512-i9xQgfaDU9QoeNnbp6rltXCWg1huEh195rpOuN8cE4BZ2FuLdQrsIcb2dhFF9aOxXf+XBA6LOSpIW051MDD/bw=="],
 
     "@shardpdf/core": ["@shardpdf/core@workspace:crates/core"],
+
+    "@shardpdf/orchestrator": ["@shardpdf/orchestrator@workspace:packages/orchestrator"],
 
     "@swc/helpers": ["@swc/helpers@0.5.23", "", { "dependencies": { "tslib": "^2.8.0" } }, "sha512-5lSsMOTXURePglDfvuAQUqkGek9Hg2kksOYay2m0+XR++b2NWYL/4sWyuvVBIs8oKnJaxkdi9whaL/sqN13afw=="],
 
