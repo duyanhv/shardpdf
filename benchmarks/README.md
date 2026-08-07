@@ -36,6 +36,23 @@ node benchmarks/bind/harness.ts --runner all --mode all --scale full \
   --iterations 3 --tag local-bind
 ```
 
+Production-shaped bind comparison (also excludes fixture rendering):
+
+```bash
+node benchmarks/bind/production-fixture.ts --profile full \
+  --output benchmarks/out/production-full
+node benchmarks/bind/harness.ts \
+  --fixture benchmarks/out/production-full/manifest.json \
+  --runner all --mode all --iterations 3 --tag local-production
+```
+
+The production-shaped corpus is deterministic and entirely synthetic; it does
+not read Floor Inspector source, assets, or customer data. It adds embedded
+Korean font subsets, JPEG covers, transparent PNG overlays, repeated resources,
+annotations, cross-shard destinations, and a three-level outline tree. On
+systems without a standard Korean font, set `SHARDPDF_BENCH_KOREAN_FONT` and,
+for a TTC collection, `SHARDPDF_BENCH_KOREAN_FONT_FACE`.
+
 The bind harness samples aggregate RSS for the runner and all descendant
 processes. This matters for qpdf: measuring only the Node wrapper would omit the
 native qpdf subprocess and produce a misleadingly low number. Both engines read

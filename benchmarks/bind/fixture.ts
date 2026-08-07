@@ -59,6 +59,7 @@ export async function prepareBindFixture(
 
   const manifest: BindFixtureManifest = {
     version: 1,
+    name: scale,
     scale,
     shardPages: BIND_SHARD_PAGES,
     totalPages: layout.totalPages,

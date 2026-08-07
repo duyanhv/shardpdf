@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "bind": "node bind/harness.ts"
+    "bind": "node bind/harness.ts",
+    "fixture:production": "node bind/production-fixture.ts"
   },
   "devDependencies": {
     "@types/node": "^24",
@@ -14,6 +15,7 @@
   "dependencies": {
     "@react-pdf/renderer": "^4.5.1",
     "@shardpdf/core": "workspace:*",
+    "jpeg-js": "^0.4.4",
     "pdf-lib": "^1.17.1",
     "pdf-merger-js": "^5.1.2",
     "pdfkit": "^0.19.1",

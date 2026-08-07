@@ -1,0 +1,110 @@
+{
+  "engine": "shardpdf",
+  "mode": "outline",
+  "fixture": "production-full",
+  "scale": null,
+  "iterations": 3,
+  "median": {
+    "peakProcessTreeRssBytes": 91471872,
+    "wallTimeMs": 688,
+    "outputBytes": 44769526
+  },
+  "samples": [
+    {
+      "iteration": 1,
+      "engine": "shardpdf",
+      "mode": "outline",
+      "fixture": "production-full",
+      "scale": null,
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 91717632,
+      "wallTimeMs": 723,
+      "outputBytes": 44769526,
+      "pageCountReported": 2560,
+      "pageCountActual": 2560,
+      "qpdfCheck": "pass",
+      "linkCheck": "pass",
+      "outlineCheck": "pass",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "local-production",
+        "node": "v24.14.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 12.3.2",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-07T10:20:53.508Z",
+      "notes": []
+    },
+    {
+      "iteration": 2,
+      "engine": "shardpdf",
+      "mode": "outline",
+      "fixture": "production-full",
+      "scale": null,
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 90406912,
+      "wallTimeMs": 682,
+      "outputBytes": 44769526,
+      "pageCountReported": 2560,
+      "pageCountActual": 2560,
+      "qpdfCheck": "pass",
+      "linkCheck": "pass",
+      "outlineCheck": "pass",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "local-production",
+        "node": "v24.14.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 12.3.2",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-07T10:20:56.215Z",
+      "notes": []
+    },
+    {
+      "iteration": 3,
+      "engine": "shardpdf",
+      "mode": "outline",
+      "fixture": "production-full",
+      "scale": null,
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 91471872,
+      "wallTimeMs": 688,
+      "outputBytes": 44769526,
+      "pageCountReported": 2560,
+      "pageCountActual": 2560,
+      "qpdfCheck": "pass",
+      "linkCheck": "pass",
+      "outlineCheck": "pass",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "local-production",
+        "node": "v24.14.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 12.3.2",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-07T10:20:58.909Z",
+      "notes": []
+    }
+  ]
+}

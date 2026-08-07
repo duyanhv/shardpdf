@@ -92,7 +92,8 @@ Still unproven or unimplemented:
 
 - Head-to-head qpdf assembly and outline benchmarks on constrained Linux and a
   real `t3.small`. The local Apple Silicon bind-only baseline is now recorded.
-- A production-shaped Floor Inspector compatibility corpus.
+- A sanitized production export and second-validator visual parity. A
+  self-contained production-shaped PDFKit corpus is now recorded locally.
 - Confirmation on a real `t3.small`; the current constrained result is a Docker simulation.
 - Linux musl prebuilds and an explicit Node/Bun runtime compatibility matrix.
 - A public package release and consumer installation test.
@@ -293,7 +294,12 @@ Existing pdf-merger-js results remain useful, but they do not establish superior
 - Add qpdf merge and merge-plus-outline benchmark runners. **Complete locally:**
   the bind-only harness measures aggregate runner/subprocess RSS and validates
   pages, links, and outline targets over the shared 11,164-page fixture.
-- Capture a sanitized Floor Inspector compatibility corpus.
+- Add a self-contained production-shaped PDFKit corpus. **Complete locally:** 32
+  shards and 2,560 pages exercise embedded Korean fonts, JPEG/alpha-PNG images,
+  repeated resources, annotations, 2,560 named links, and 354 nested outlines
+  without reading or modifying the Floor Inspector repository.
+- Capture a sanitized production export later, during the approved integration
+  phase, and compare representative page renders with a second validator.
 - Run the benchmark matrix under Docker constraints and on a real `t3.small`.
 - Record native core RSS separately from renderer/layout RSS.
 

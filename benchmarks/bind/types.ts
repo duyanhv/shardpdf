@@ -12,8 +12,12 @@ export interface BindOutlineEntry {
 
 export interface BindFixtureManifest {
   version: 1;
-  scale: ScaleName;
-  shardPages: number;
+  /** Stable, filename-safe fixture identifier. */
+  name: string;
+  /** Present only for the built-in canonical workload. */
+  scale?: ScaleName;
+  /** Planning hint used to create the fixture, when chunks use a fixed cap. */
+  shardPages?: number;
   totalPages: number;
   /** Paths relative to the manifest directory. */
   shards: string[];

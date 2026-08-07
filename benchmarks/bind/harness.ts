@@ -1,5 +1,12 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { parseArgs, promisify } from "node:util";
 import { SCALES, type ScaleName } from "../workload/data.ts";
@@ -24,7 +31,8 @@ interface BindResult {
   iteration: number;
   engine: BindEngine;
   mode: BindMode;
-  scale: ScaleName;
+  fixture: string;
+  scale: ScaleName | null;
   outcome: Outcome;
   /** Peak aggregate RSS of the runner and every descendant subprocess. */
   peakProcessTreeRssBytes: number | null;
@@ -50,7 +58,8 @@ interface BindResult {
 interface BindResultSet {
   engine: BindEngine;
   mode: BindMode;
-  scale: ScaleName;
+  fixture: string;
+  scale: ScaleName | null;
   iterations: number;
   median: {
     peakProcessTreeRssBytes: number | null;
@@ -65,13 +74,18 @@ const { values } = parseArgs({
     runner: { type: "string", default: "all" },
     mode: { type: "string", default: "all" },
     scale: { type: "string" },
+    fixture: { type: "string" },
     tag: { type: "string", default: "local-bind" },
     keep: { type: "boolean", default: false },
     iterations: { type: "string", default: "3" },
   },
 });
 
-if (values.scale === undefined || !(values.scale in SCALES)) {
+if ((values.scale === undefined) === (values.fixture === undefined)) {
+  console.error("pass exactly one of --scale or --fixture");
+  process.exit(2);
+}
+if (values.scale !== undefined && !(values.scale in SCALES)) {
   console.error(`--scale must be one of: ${Object.keys(SCALES).join(", ")}`);
   process.exit(2);
 }
@@ -95,15 +109,21 @@ if (!Number.isInteger(iterations) || iterations < 1 || iterations > 20) {
   process.exit(2);
 }
 
-const scale = values.scale as ScaleName;
-const fixtureDir = path.join(BENCH_DIR, "out", `bind-fixture-${scale}`);
-console.log(`Preparing shared ${scale} bind fixture (not measured)...`);
-const manifestPath = await prepareBindFixture(scale, fixtureDir);
-const fixture = JSON.parse(
-  await readFile(manifestPath, "utf8"),
-) as BindFixtureManifest;
+const generatedScale = values.scale as ScaleName | undefined;
+const generatedFixtureDir =
+  generatedScale === undefined
+    ? undefined
+    : path.join(BENCH_DIR, "out", `bind-fixture-${generatedScale}`);
+const manifestPath =
+  generatedScale === undefined
+    ? path.resolve(values.fixture as string)
+    : await prepareGeneratedFixture(
+        generatedScale,
+        generatedFixtureDir as string,
+      );
+const fixture = await readAndValidateFixture(manifestPath);
 console.log(
-  `Prepared ${fixture.shards.length} shard(s), ${fixture.totalPages} pages, ${fixture.outline.length} outlines.`,
+  `Using fixture ${fixture.name}: ${fixture.shards.length} shard(s), ${fixture.totalPages} pages, ${fixture.outline.length} outlines.`,
 );
 
 try {
@@ -124,11 +144,98 @@ try {
           ),
         );
       }
-      await writeResultSet(engine, mode, fixture.scale, values.tag, samples);
+      await writeResultSet(engine, mode, fixture, values.tag, samples);
     }
   }
 } finally {
-  if (!values.keep) await rm(fixtureDir, { recursive: true, force: true });
+  if (!values.keep && generatedFixtureDir !== undefined) {
+    await rm(generatedFixtureDir, { recursive: true, force: true });
+  }
+}
+
+async function prepareGeneratedFixture(
+  scale: ScaleName,
+  fixtureDir: string,
+): Promise<string> {
+  console.log(`Preparing shared ${scale} bind fixture (not measured)...`);
+  return prepareBindFixture(scale, fixtureDir);
+}
+
+async function readAndValidateFixture(
+  manifestPath: string,
+): Promise<BindFixtureManifest> {
+  const fixture = JSON.parse(
+    await readFile(manifestPath, "utf8"),
+  ) as BindFixtureManifest;
+  if (fixture.version !== 1) {
+    throw new Error(
+      `unsupported bind fixture version ${String(fixture.version)}`,
+    );
+  }
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(fixture.name)) {
+    throw new Error(
+      `fixture name must be filename-safe lowercase text, got ${JSON.stringify(fixture.name)}`,
+    );
+  }
+  if (!Number.isInteger(fixture.totalPages) || fixture.totalPages < 1) {
+    throw new Error(
+      `fixture totalPages must be positive, got ${fixture.totalPages}`,
+    );
+  }
+  if (!Array.isArray(fixture.shards) || fixture.shards.length === 0) {
+    throw new Error("fixture must contain at least one shard");
+  }
+
+  const fixtureDir = await realpath(path.dirname(manifestPath));
+  let actualPages = 0;
+  for (const shard of fixture.shards) {
+    if (path.isAbsolute(shard)) {
+      throw new Error(`fixture shard path must be relative: ${shard}`);
+    }
+    const shardPath = await realpath(path.resolve(fixtureDir, shard));
+    if (
+      shardPath !== fixtureDir &&
+      !shardPath.startsWith(`${fixtureDir}${path.sep}`)
+    ) {
+      throw new Error(`fixture shard escapes its directory: ${shard}`);
+    }
+    const { stdout } = await execFileP("qpdf", ["--show-npages", shardPath]);
+    const pages = Number.parseInt(stdout.trim(), 10);
+    if (!Number.isInteger(pages) || pages < 1) {
+      throw new Error(`could not read page count for fixture shard ${shard}`);
+    }
+    actualPages += pages;
+  }
+  if (actualPages !== fixture.totalPages) {
+    throw new Error(
+      `fixture page mismatch: manifest=${fixture.totalPages} shards=${actualPages}`,
+    );
+  }
+
+  let previousLevel = 0;
+  fixture.outline.forEach((entry, index) => {
+    if (
+      !Number.isInteger(entry.pageIndex) ||
+      entry.pageIndex < 0 ||
+      entry.pageIndex >= fixture.totalPages
+    ) {
+      throw new Error(
+        `fixture outline ${index} has invalid page ${entry.pageIndex}`,
+      );
+    }
+    if (
+      !Number.isInteger(entry.level) ||
+      entry.level < 0 ||
+      (index === 0 && entry.level !== 0) ||
+      entry.level > previousLevel + 1
+    ) {
+      throw new Error(
+        `fixture outline ${index} has invalid level ${entry.level}`,
+      );
+    }
+    previousLevel = entry.level;
+  });
+  return fixture;
 }
 
 async function runOne(
@@ -144,13 +251,13 @@ async function runOne(
   const outDir = path.join(BENCH_DIR, "out");
   const outputPath = path.join(
     outDir,
-    `bind-${fixture.scale}-${engine}-${mode}-run-${iteration}.pdf`,
+    `bind-${fixture.name}-${engine}-${mode}-run-${iteration}.pdf`,
   );
   await mkdir(outDir, { recursive: true });
   await rm(outputPath, { force: true });
 
   console.log(
-    `\n▶ bind ${engine} / ${mode} @ ${fixture.scale} (${iteration}/${iterations})`,
+    `\n▶ bind ${engine} / ${mode} @ ${fixture.name} (${iteration}/${iterations})`,
   );
   const child = spawn(
     process.execPath,
@@ -244,8 +351,10 @@ async function runOne(
           `${links.missing.length}/${links.referenced} named link destinations are undefined`,
         );
       }
-    } catch {
-      notes.push("link integrity check failed to run");
+    } catch (error) {
+      notes.push(
+        `link integrity check failed to run: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
     if (mode === "outline") {
       try {
@@ -253,8 +362,10 @@ async function runOne(
         const mismatch = compareOutlines(fixture.outline, outlines);
         outlineCheck = mismatch === null ? "pass" : "fail";
         if (mismatch !== null) notes.push(mismatch);
-      } catch {
-        notes.push("outline validation failed to run");
+      } catch (error) {
+        notes.push(
+          `outline validation failed to run: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
 
@@ -280,7 +391,8 @@ async function runOne(
     iteration,
     engine,
     mode,
-    scale: fixture.scale,
+    fixture: fixture.name,
+    scale: fixture.scale ?? null,
     outcome,
     peakProcessTreeRssBytes: peakRss,
     wallTimeMs,
@@ -316,7 +428,7 @@ async function runOne(
 async function writeResultSet(
   engine: BindEngine,
   mode: BindMode,
-  scale: ScaleName,
+  fixture: BindFixtureManifest,
   tag: string,
   samples: BindResult[],
 ): Promise<void> {
@@ -329,7 +441,8 @@ async function writeResultSet(
   const resultSet: BindResultSet = {
     engine,
     mode,
-    scale,
+    fixture: fixture.name,
+    scale: fixture.scale ?? null,
     iterations: samples.length,
     median: {
       peakProcessTreeRssBytes:
@@ -342,7 +455,7 @@ async function writeResultSet(
   const resultsDir = path.join(BENCH_DIR, "results");
   await mkdir(resultsDir, { recursive: true });
   await writeFile(
-    path.join(resultsDir, `${tag}-${scale}-bind-${engine}-${mode}.json`),
+    path.join(resultsDir, `${tag}-${fixture.name}-bind-${engine}-${mode}.json`),
     `${JSON.stringify(resultSet, null, 2)}\n`,
   );
 
@@ -408,35 +521,47 @@ async function sampleProcessTreeRss(rootPid: number): Promise<number | null> {
 async function checkLinkIntegrity(
   pdfPath: string,
 ): Promise<{ referenced: number; missing: string[] }> {
-  const qdfPath = `${pdfPath}.qdf`;
-  try {
-    await execFileP(
-      "qpdf",
-      ["--qdf", "--object-streams=disable", pdfPath, qdfPath],
-      { maxBuffer: 16 * 1024 * 1024 },
-    );
-    const text = await readFile(qdfPath, "latin1");
-    const referenced = new Set<string>();
-    const defined = new Set<string>();
-    for (const chunk of text.split("endobj")) {
-      if (chunk.includes("/S /GoTo")) {
-        for (const match of chunk.matchAll(/\/D \(([^)]*)\)/g)) {
-          if (match[1] !== undefined) referenced.add(match[1]);
-        }
-      }
-      if (/\/(?:Names|Limits) \[/.test(chunk)) {
-        for (const match of chunk.matchAll(/\(([^)]*)\)/g)) {
-          if (match[1] !== undefined) defined.add(match[1]);
-        }
+  const { stdout } = await execFileP(
+    "qpdf",
+    [
+      pdfPath,
+      "--json-output=2",
+      "--json-stream-data=none",
+      "--json-key=qpdf",
+      "-",
+    ],
+    { maxBuffer: 64 * 1024 * 1024 },
+  );
+  const json = JSON.parse(stdout) as unknown;
+  const referenced = new Set<string>();
+  const defined = new Set<string>();
+
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const value of node) visit(value);
+      return;
+    }
+    if (node === null || typeof node !== "object") return;
+
+    const dictionary = node as Record<string, unknown>;
+    if (dictionary["/S"] === "/GoTo" && typeof dictionary["/D"] === "string") {
+      referenced.add(dictionary["/D"]);
+    }
+    const names = dictionary["/Names"];
+    if (Array.isArray(names)) {
+      for (let index = 0; index < names.length; index += 2) {
+        const name = names[index];
+        if (typeof name === "string") defined.add(name);
       }
     }
-    return {
-      referenced: referenced.size,
-      missing: [...referenced].filter((name) => !defined.has(name)),
-    };
-  } finally {
-    await rm(qdfPath, { force: true });
-  }
+    for (const value of Object.values(dictionary)) visit(value);
+  };
+  visit(json);
+
+  return {
+    referenced: referenced.size,
+    missing: [...referenced].filter((name) => !defined.has(name)),
+  };
 }
 
 interface QpdfOutline {
