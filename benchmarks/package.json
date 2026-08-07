@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bind": "node bind/harness.ts"
   },
   "devDependencies": {
     "@types/node": "^24",

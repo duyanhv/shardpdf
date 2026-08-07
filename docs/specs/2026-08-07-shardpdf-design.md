@@ -90,7 +90,8 @@ The original MVP milestones are complete on `main`:
 
 Still unproven or unimplemented:
 
-- Head-to-head qpdf assembly and outline benchmarks.
+- Head-to-head qpdf assembly and outline benchmarks on constrained Linux and a
+  real `t3.small`. The local Apple Silicon bind-only baseline is now recorded.
 - A production-shaped Floor Inspector compatibility corpus.
 - Confirmation on a real `t3.small`; the current constrained result is a Docker simulation.
 - Linux musl prebuilds and an explicit Node/Bun runtime compatibility matrix.
@@ -289,7 +290,9 @@ Existing pdf-merger-js results remain useful, but they do not establish superior
 
 ### Phase 1 — establish production truth
 
-- Add qpdf merge and merge-plus-outline benchmark runners.
+- Add qpdf merge and merge-plus-outline benchmark runners. **Complete locally:**
+  the bind-only harness measures aggregate runner/subprocess RSS and validates
+  pages, links, and outline targets over the shared 11,164-page fixture.
 - Capture a sanitized Floor Inspector compatibility corpus.
 - Run the benchmark matrix under Docker constraints and on a real `t3.small`.
 - Record native core RSS separately from renderer/layout RSS.

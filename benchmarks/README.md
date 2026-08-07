@@ -14,6 +14,8 @@ for the canonical document every runner must produce, and the design spec in
   `bun run --cwd crates/core build`)
 - `harness/` — spawns runners under Node, samples peak RSS, validates with qpdf,
   writes JSON into `results/`
+- `bind/` — prepares one shared set of PDFKit shards, then measures qpdf and
+  `@shardpdf/core` assembly in isolation (merge-only and merge-plus-outline)
 - `results/` — committed evidence; `out/` — generated PDFs, gitignored
 
 ## Running
@@ -27,6 +29,20 @@ Local, uncapped (development + RSS curves):
 node benchmarks/harness/run.ts --runner all --scale smoke
 ```
 
+Bind-only comparison (fixture rendering is not measured):
+
+```bash
+node benchmarks/bind/harness.ts --runner all --mode all --scale full \
+  --iterations 3 --tag local-bind
+```
+
+The bind harness samples aggregate RSS for the runner and all descendant
+processes. This matters for qpdf: measuring only the Node wrapper would omit the
+native qpdf subprocess and produce a misleadingly low number. Both engines read
+the exact same pre-rendered shards and receive the same outline entries. Results
+store every raw trial plus medians; use at least three iterations for comparison
+claims and more when the runtime difference is close.
+
 Capped at t3.small resources (the headline numbers):
 
 ```bash
@@ -39,6 +55,10 @@ docker run --rm --memory=2g --memory-swap=2g --cpus=2 \
 `--memory-swap=2g` (equal to `--memory`) disables swap so the OOM killer fires like a
 real memory-starved instance instead of thrashing. Final numbers get confirmed once on
 a real t3.small with `--tag t3.small`.
+
+The bind-only harness uses the same resource-cap protocol. A Linux shardpdf
+prebuild must be available in the image before running both bind engines there;
+until then, local bind results are directional rather than the release headline.
 
 ## Runner contract
 
