@@ -1,0 +1,29 @@
+{
+  "runner": "pdfkit",
+  "scale": "full",
+  "outcome": "ok",
+  "peakRssBytes": 1049870336,
+  "wallTimeMs": 9680,
+  "outputBytes": 23288463,
+  "pageCountReported": 11164,
+  "pageCountActual": 11164,
+  "qpdf": "pass",
+  "linkCheck": "pass",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "machine": {
+    "tag": "local-docker",
+    "node": "v24.19.0",
+    "platform": "linux"
+  },
+  "versions": {
+    "pdf-lib": "1.17.1",
+    "pdfkit": "0.19.1",
+    "@react-pdf/renderer": "4.5.1",
+    "pdf-merger-js": "5.1.2"
+  },
+  "timestamp": "2026-08-07T07:15:02.365Z",
+  "notes": []
+}

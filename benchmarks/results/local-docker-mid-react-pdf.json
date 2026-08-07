@@ -1,0 +1,31 @@
+{
+  "runner": "react-pdf",
+  "scale": "mid",
+  "outcome": "oom",
+  "peakRssBytes": 1203617792,
+  "wallTimeMs": 10526,
+  "outputBytes": null,
+  "pageCountReported": null,
+  "pageCountActual": null,
+  "qpdf": "skipped",
+  "linkCheck": "skipped",
+  "exit": {
+    "code": null,
+    "signal": "SIGABRT"
+  },
+  "machine": {
+    "tag": "local-docker",
+    "node": "v24.19.0",
+    "platform": "linux"
+  },
+  "versions": {
+    "pdf-lib": "1.17.1",
+    "pdfkit": "0.19.1",
+    "@react-pdf/renderer": "4.5.1",
+    "pdf-merger-js": "5.1.2"
+  },
+  "timestamp": "2026-08-07T07:16:00.299Z",
+  "notes": [
+    "V8 heap exhaustion (FATAL ERROR: JavaScript heap out of memory)"
+  ]
+}

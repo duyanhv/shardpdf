@@ -1,0 +1,20 @@
+{
+  "name": "benchmarks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "@types/pdfkit": "^0.17.6",
+    "@types/react": "^19.2.18"
+  },
+  "dependencies": {
+    "@react-pdf/renderer": "^4.5.1",
+    "pdf-lib": "^1.17.1",
+    "pdf-merger-js": "^5.1.2",
+    "pdfkit": "^0.19.1",
+    "react": "^19.2.8"
+  }
+}
