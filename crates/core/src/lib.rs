@@ -1,11 +1,11 @@
 //! napi surface — deliberately tiny (design spec §Architecture):
 //! createAssembly → appendShard → finalize. Byte-level work only; all
-//! orchestration lives in TypeScript. Calls are synchronous in v0; async
-//! task variants come with the streaming writer.
+//! orchestration lives in TypeScript.
 
 #![deny(clippy::all)]
 
 pub mod assembler;
+pub mod serializer;
 
 use napi_derive::napi;
 
@@ -21,10 +21,12 @@ pub struct Assembly {
 #[napi]
 impl Assembly {
     #[napi(constructor)]
-    pub fn new(output_path: String) -> Self {
-        Assembly {
-            inner: Some(assembler::Assembly::new(output_path)),
-        }
+    pub fn new(output_path: String) -> napi::Result<Self> {
+        Ok(Assembly {
+            inner: Some(
+                assembler::Assembly::new(output_path).map_err(to_napi_err)?,
+            ),
+        })
     }
 
     /// Appends one complete single-shard PDF; returns its page count.

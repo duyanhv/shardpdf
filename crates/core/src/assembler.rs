@@ -1,16 +1,25 @@
-//! Sequential shard assembler: append complete single-shard PDFs, then
+//! Streaming shard assembler: append complete single-shard PDFs, then
 //! finalize into one document with a rebuilt page tree and a merged
 //! named-destination tree.
 //!
 //! Boundary (per design spec): structure only — page tree, destinations,
 //! (later) outlines and patch tables. Content streams are never rewritten.
 //!
-//! v0 correctness-first limitation: the output document accumulates in memory
-//! and is serialized at finalize. The streaming writer (working set = one
-//! shard) replaces this before any memory-ceiling claim is made.
+//! Memory model: object ids 1 (Pages) and 2 (Catalog) are reserved up front,
+//! so every shard object streams to disk the moment its shard is parsed and
+//! the shard is dropped before the next loads. The working set is one parsed
+//! shard plus O(pages + destinations) bookkeeping (byte offsets, page ids,
+//! dest names) — the `O(largest shard) + O(page-tree/outline metadata)`
+//! formula the spec promises. Shard catalogs/page-tree roots are written as
+//! unreachable orphan objects (bytes over bookkeeping: keeping ids dense
+//! beats re-walking shards to drop a few small dicts).
 
+use crate::serializer::write_indirect_object;
 use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, StringFormat};
+use std::collections::BTreeMap;
 use std::fmt;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 pub type Result<T> = std::result::Result<T, AssemblyError>;
@@ -46,26 +55,69 @@ impl From<std::io::Error> for AssemblyError {
     }
 }
 
+const PAGES_ID: ObjectId = (1, 0);
+const CATALOG_ID: ObjectId = (2, 0);
+const FIRST_SHARD_OBJECT: u32 = 3;
+
 /// Page-tree attributes that children inherit; must be pushed down onto each
-/// page before its original parent chain is discarded.
+/// page because the final tree is flat (single Pages parent, no attributes).
 const INHERITABLE_PAGE_KEYS: [&[u8]; 4] =
     [b"Resources", b"MediaBox", b"CropBox", b"Rotate"];
 
+struct CountingWriter {
+    inner: BufWriter<File>,
+    position: u64,
+}
+
+impl CountingWriter {
+    fn new(file: File) -> Self {
+        CountingWriter {
+            inner: BufWriter::new(file),
+            position: 0,
+        }
+    }
+}
+
+impl Write for CountingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.position += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 pub struct Assembly {
     output_path: PathBuf,
-    doc: Document,
+    writer: CountingWriter,
+    /// object number -> byte offset of its `n g obj` header
+    offsets: BTreeMap<u32, u64>,
     page_ids: Vec<ObjectId>,
     named_dests: Vec<(Vec<u8>, Object)>,
+    next_object: u32,
 }
 
 impl Assembly {
-    pub fn new(output_path: impl Into<PathBuf>) -> Self {
-        Assembly {
-            output_path: output_path.into(),
-            doc: Document::with_version("1.7"),
+    pub fn new(output_path: impl Into<PathBuf>) -> Result<Self> {
+        let output_path = output_path.into();
+        let mut writer = CountingWriter::new(File::create(&output_path)?);
+        // Header + high-bit comment marking the file as binary (spec §7.5.2).
+        writer.write_all(b"%PDF-1.7\n%\xB5\xB5\xB5\xB5\n")?;
+        Ok(Assembly {
+            output_path,
+            writer,
+            offsets: BTreeMap::new(),
             page_ids: Vec::new(),
             named_dests: Vec::new(),
-        }
+            next_object: FIRST_SHARD_OBJECT,
+        })
+    }
+
+    pub fn output_path(&self) -> &Path {
+        &self.output_path
     }
 
     pub fn append_shard_file(&mut self, path: &Path) -> Result<u32> {
@@ -73,10 +125,11 @@ impl Assembly {
         self.append_shard_doc(shard)
     }
 
-    /// Grafts a shard's pages (and every object they reach) into the growing
-    /// document. Returns the shard's page count.
+    /// Streams a shard's objects into the output file. The shard is fully
+    /// consumed; nothing of it stays in memory beyond page ids, destination
+    /// names, and byte offsets.
     pub fn append_shard_doc(&mut self, mut shard: Document) -> Result<u32> {
-        shard.renumber_objects_with(self.doc.max_id + 1);
+        shard.renumber_objects_with(self.next_object);
 
         let pages: Vec<ObjectId> = shard.get_pages().into_values().collect();
         if pages.is_empty() {
@@ -86,22 +139,18 @@ impl Assembly {
         push_down_inherited(&mut shard, &pages)?;
         let dests = extract_named_dests(&shard)?;
 
-        // The shard's own catalog and page-tree root are replaced by ours;
-        // drop them so finalize's prune has nothing dangling to keep.
-        let root_id = trailer_root(&shard)?;
-        let pages_root = shard
-            .get_object(root_id)?
-            .as_dict()?
-            .get(b"Pages")?
-            .as_reference()?;
-        shard.objects.remove(&root_id);
-        shard.objects.remove(&pages_root);
-
-        let count = pages.len() as u32;
-        if shard.max_id > self.doc.max_id {
-            self.doc.max_id = shard.max_id;
+        for &pid in &pages {
+            let page = shard.get_object_mut(pid)?.as_dict_mut()?;
+            page.set("Parent", Object::Reference(PAGES_ID));
         }
-        self.doc.objects.extend(shard.objects);
+
+        for (&id, object) in &shard.objects {
+            self.offsets.insert(id.0, self.writer.position);
+            write_indirect_object(&mut self.writer, id, object)?;
+        }
+
+        self.next_object = shard.max_id + 1;
+        let count = pages.len() as u32;
         self.page_ids.extend(pages);
         self.named_dests.extend(dests);
         Ok(count)
@@ -111,27 +160,24 @@ impl Assembly {
         self.page_ids.len()
     }
 
-    /// Builds the unified page tree + merged name tree, writes the document.
+    /// Writes the unified page tree, catalog (with merged name tree), xref
+    /// table and trailer. Consumes the assembly.
     pub fn finalize(mut self) -> Result<()> {
-        let pages_id = self.doc.new_object_id();
-        for &pid in &self.page_ids {
-            let page = self.doc.get_object_mut(pid)?.as_dict_mut()?;
-            page.set("Parent", Object::Reference(pages_id));
-        }
-        let kids: Vec<Object> =
-            self.page_ids.iter().map(|&id| Object::Reference(id)).collect();
-        self.doc.objects.insert(
-            pages_id,
-            Object::Dictionary(dictionary! {
-                "Type" => "Pages",
-                "Count" => self.page_ids.len() as i64,
-                "Kids" => kids,
-            }),
-        );
+        let pages = Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Count" => self.page_ids.len() as i64,
+            "Kids" => self
+                .page_ids
+                .iter()
+                .map(|&id| Object::Reference(id))
+                .collect::<Vec<Object>>(),
+        });
+        self.offsets.insert(PAGES_ID.0, self.writer.position);
+        write_indirect_object(&mut self.writer, PAGES_ID, &pages)?;
 
         let mut catalog = dictionary! {
             "Type" => "Catalog",
-            "Pages" => Object::Reference(pages_id),
+            "Pages" => Object::Reference(PAGES_ID),
         };
         if !self.named_dests.is_empty() {
             self.named_dests.sort_by(|a, b| a.0.cmp(&b.0));
@@ -148,12 +194,35 @@ impl Assembly {
                 }),
             );
         }
-        let catalog_id = self.doc.add_object(catalog);
-        self.doc.trailer.set("Root", Object::Reference(catalog_id));
+        self.offsets.insert(CATALOG_ID.0, self.writer.position);
+        write_indirect_object(
+            &mut self.writer,
+            CATALOG_ID,
+            &Object::Dictionary(catalog),
+        )?;
 
-        self.doc.prune_objects(); // orphaned shard structures (old name trees…)
-        self.doc.compress();
-        self.doc.save(&self.output_path)?;
+        let size = self.next_object;
+        for number in 1..size {
+            if !self.offsets.contains_key(&number) {
+                return Err(AssemblyError::Malformed(format!(
+                    "xref gap at object {number}: shard renumbering not dense"
+                )));
+            }
+        }
+
+        let xref_start = self.writer.position;
+        writeln!(self.writer, "xref\n0 {size}")?;
+        self.writer.write_all(b"0000000000 65535 f \n")?;
+        for offset in self.offsets.values() {
+            self.writer
+                .write_all(format!("{offset:010} 00000 n \n").as_bytes())?;
+        }
+        write!(
+            self.writer,
+            "trailer\n<< /Size {size} /Root {} {} R >>\nstartxref\n{xref_start}\n%%EOF\n",
+            CATALOG_ID.0, CATALOG_ID.1
+        )?;
+        self.writer.flush()?;
         Ok(())
     }
 }
@@ -178,7 +247,7 @@ fn resolve_dict<'a>(doc: &'a Document, obj: &'a Object) -> Result<&'a Dictionary
 }
 
 /// Copies inheritable page-tree attributes onto each page that lacks them,
-/// so pages stay correct after their original parent chain is dropped.
+/// so pages stay correct after their original parent chain is discarded.
 fn push_down_inherited(shard: &mut Document, pages: &[ObjectId]) -> Result<()> {
     for &pid in pages {
         let mut inherited: Vec<(&[u8], Object)> = Vec::new();
@@ -325,7 +394,7 @@ mod tests {
 
     fn assemble(shards: Vec<Document>, name: &str) -> Document {
         let out = std::env::temp_dir().join(format!("shardpdf-core-test-{name}.pdf"));
-        let mut assembly = Assembly::new(&out);
+        let mut assembly = Assembly::new(&out).unwrap();
         for shard in shards {
             assembly.append_shard_doc(shard).unwrap();
         }
@@ -441,10 +510,37 @@ mod tests {
         doc.trailer.set("Root", Object::Reference(catalog_id));
 
         let out = std::env::temp_dir().join("shardpdf-core-test-empty.pdf");
-        let mut assembly = Assembly::new(&out);
+        let mut assembly = Assembly::new(&out).unwrap();
         assert!(matches!(
             assembly.append_shard_doc(doc),
             Err(AssemblyError::Malformed(_))
         ));
+        drop(assembly);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn indirect_stream_lengths_are_inlined() {
+        // pdfkit writes /Length as an indirect reference; the output must
+        // still parse with correct stream framing.
+        let mut doc = make_shard(1, "len");
+        // Rewrite the first stream's Length as an indirect reference.
+        let stream_id = doc
+            .objects
+            .iter()
+            .find(|(_, o)| matches!(o, Object::Stream(_)))
+            .map(|(&id, _)| id)
+            .unwrap();
+        let len = match doc.get_object(stream_id).unwrap() {
+            Object::Stream(s) => s.content.len() as i64,
+            _ => unreachable!(),
+        };
+        let len_id = doc.add_object(Object::Integer(len));
+        if let Object::Stream(s) = doc.get_object_mut(stream_id).unwrap() {
+            s.dict.set("Length", Object::Reference(len_id));
+        }
+        let merged = assemble(vec![doc], "indirect-length");
+        let pages: Vec<ObjectId> = merged.get_pages().into_values().collect();
+        assert!(page_text(&merged, pages[0]).contains("len-p0"));
     }
 }
