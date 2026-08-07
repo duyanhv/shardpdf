@@ -20,6 +20,10 @@ const result = await generate(
   {
     outputPath: "out/report.pdf",
     maxPagesPerShard: 400,
+    outline: [
+      { title: "Table of contents", anchor: "toc" },
+      { title: "Chapter 1", anchor: "chapter:1" },
+    ],
     onProgress: (e) => console.log(e.phase, e.done, "/", e.total),
   },
 );
@@ -36,7 +40,12 @@ JSON-serializable data, and rendering must be deterministic — a pass-2 page
 count that disagrees with pass-1 fails the run (`DeterminismError`) rather than
 shipping a corrupt TOC.
 
-## Resume
+## Bookmarks and resume
+
+`outline` entries target anchor names reported by the adapter in pass 1. The
+orchestrator resolves them to absolute pages and the Rust core writes a PDF
+`/Outlines` tree. Use `level` for nesting; levels must start at zero and may
+only increase one step at a time.
 
 Completed measures/renders are cached under content hashes of everything they
 depend on (adapter ref, section data, global context) in
@@ -45,7 +54,7 @@ to retain the cache after success.
 
 ## Tests
 
-- `bun run --cwd packages/orchestrator test` — 15 tests incl. end-to-end
+- `bun run --cwd packages/orchestrator test` — 19 tests incl. end-to-end
   multi-shard generation, cross-shard link integrity, resume, determinism
   enforcement, abort.
 - `bun run --cwd packages/orchestrator soak` — the memory-boundedness

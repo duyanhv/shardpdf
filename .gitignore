@@ -5,3 +5,9 @@ target/
 *.node
 benchmarks/out/
 *.log
+
+# cargo-fuzz grows this directory while running. Keep the deterministic seed,
+# but do not accidentally commit the generated working corpus.
+crates/core/fuzz/corpus/append_shard/*
+!crates/core/fuzz/corpus/append_shard/seed-shard.pdf
+crates/core/fuzz/artifacts/

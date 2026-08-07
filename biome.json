@@ -6,7 +6,12 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/results"]
+    "includes": [
+      "**",
+      "!**/results",
+      "!crates/core/index.js",
+      "!crates/core/index.d.ts"
+    ]
   },
   "formatter": {
     "enabled": true,

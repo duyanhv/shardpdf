@@ -3,7 +3,7 @@
 //! named-destination tree.
 //!
 //! Boundary (per design spec): structure only — page tree, destinations,
-//! (later) outlines and patch tables. Content streams are never rewritten.
+//! outlines and (later) patch tables. Content streams are never rewritten.
 //!
 //! Memory model: object ids 1 (Pages) and 2 (Catalog) are reserved up front,
 //! so every shard object streams to disk the moment its shard is parsed and
@@ -14,9 +14,10 @@
 //! unreachable orphan objects (bytes over bookkeeping: keeping ids dense
 //! beats re-walking shards to drop a few small dicts).
 
+use crate::outline::{build_outline_objects, OutlineEntry};
 use crate::serializer::write_indirect_object;
 use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, StringFormat};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -61,8 +62,7 @@ const FIRST_SHARD_OBJECT: u32 = 3;
 
 /// Page-tree attributes that children inherit; must be pushed down onto each
 /// page because the final tree is flat (single Pages parent, no attributes).
-const INHERITABLE_PAGE_KEYS: [&[u8]; 4] =
-    [b"Resources", b"MediaBox", b"CropBox", b"Rotate"];
+const INHERITABLE_PAGE_KEYS: [&[u8]; 4] = [b"Resources", b"MediaBox", b"CropBox", b"Rotate"];
 
 struct CountingWriter {
     inner: BufWriter<File>,
@@ -160,9 +160,9 @@ impl Assembly {
         self.page_ids.len()
     }
 
-    /// Writes the unified page tree, catalog (with merged name tree), xref
-    /// table and trailer. Consumes the assembly.
-    pub fn finalize(mut self) -> Result<()> {
+    /// Writes the unified page tree, optional /Outlines tree, catalog (with
+    /// merged name tree), xref table and trailer. Consumes the assembly.
+    pub fn finalize(mut self, outline: Option<&[OutlineEntry]>) -> Result<()> {
         let pages = Object::Dictionary(dictionary! {
             "Type" => "Pages",
             "Count" => self.page_ids.len() as i64,
@@ -179,10 +179,25 @@ impl Assembly {
             "Type" => "Catalog",
             "Pages" => Object::Reference(PAGES_ID),
         };
+        if let Some(entries) = outline.filter(|entries| !entries.is_empty()) {
+            let mut next = self.next_object;
+            let mut alloc = || {
+                let id = (next, 0);
+                next += 1;
+                id
+            };
+            let (root_id, objects) = build_outline_objects(entries, &self.page_ids, &mut alloc)?;
+            for (id, object) in &objects {
+                self.offsets.insert(id.0, self.writer.position);
+                write_indirect_object(&mut self.writer, *id, object)?;
+            }
+            self.next_object = next;
+            catalog.set("Outlines", Object::Reference(root_id));
+            catalog.set("PageMode", Object::Name(b"UseOutlines".to_vec()));
+        }
         if !self.named_dests.is_empty() {
             self.named_dests.sort_by(|a, b| a.0.cmp(&b.0));
-            let mut names: Vec<Object> =
-                Vec::with_capacity(self.named_dests.len() * 2);
+            let mut names: Vec<Object> = Vec::with_capacity(self.named_dests.len() * 2);
             for (name, dest) in std::mem::take(&mut self.named_dests) {
                 names.push(Object::String(name, StringFormat::Literal));
                 names.push(dest);
@@ -195,11 +210,7 @@ impl Assembly {
             );
         }
         self.offsets.insert(CATALOG_ID.0, self.writer.position);
-        write_indirect_object(
-            &mut self.writer,
-            CATALOG_ID,
-            &Object::Dictionary(catalog),
-        )?;
+        write_indirect_object(&mut self.writer, CATALOG_ID, &Object::Dictionary(catalog))?;
 
         let size = self.next_object;
         for number in 1..size {
@@ -258,8 +269,19 @@ fn push_down_inherited(shard: &mut Document, pages: &[ObjectId]) -> Result<()> {
                 .filter(|key| !page.has(key))
                 .collect();
             let mut current = page;
+            let mut ancestors = BTreeSet::from([pid]);
             while !missing.is_empty() {
-                let Ok(parent) = current.get(b"Parent") else { break };
+                let Ok(parent) = current.get(b"Parent") else {
+                    break;
+                };
+                if let Object::Reference(parent_id) = parent {
+                    if !ancestors.insert(*parent_id) {
+                        return Err(AssemblyError::Malformed(format!(
+                            "cycle in /Parent chain for page {} {} R",
+                            pid.0, pid.1
+                        )));
+                    }
+                }
                 current = resolve_dict(shard, parent)?;
                 missing.retain(|key| {
                     if let Ok(value) = current.get(key) {
@@ -317,9 +339,7 @@ fn walk_name_tree(
         let names = resolve(doc, names_obj)?.as_array()?;
         for pair in names.chunks(2) {
             let [name_obj, dest] = pair else {
-                return Err(AssemblyError::Malformed(
-                    "odd-length /Names array".into(),
-                ));
+                return Err(AssemblyError::Malformed("odd-length /Names array".into()));
             };
             let name = resolve(doc, name_obj)?.as_str()?;
             out.push((name.to_vec(), dest.clone()));
@@ -398,7 +418,7 @@ mod tests {
         for shard in shards {
             assembly.append_shard_doc(shard).unwrap();
         }
-        assembly.finalize().unwrap();
+        assembly.finalize(None).unwrap();
         let merged = Document::load(&out).unwrap();
         std::fs::remove_file(&out).ok();
         merged
@@ -469,8 +489,7 @@ mod tests {
         let mut found = Vec::new();
         let names_obj = catalog.get(b"Names").expect("catalog lost /Names");
         let names_dict = resolve_dict(&merged, names_obj).unwrap();
-        walk_name_tree(&merged, names_dict.get(b"Dests").unwrap(), &mut found)
-            .unwrap();
+        walk_name_tree(&merged, names_dict.get(b"Dests").unwrap(), &mut found).unwrap();
 
         let names: Vec<String> = found
             .iter()
@@ -491,10 +510,59 @@ mod tests {
                 .as_name()
                 .unwrap();
             assert_eq!(
-                target_type, b"Page",
+                target_type,
+                b"Page",
                 "dest {} points at a non-page",
                 String::from_utf8_lossy(name)
             );
+        }
+    }
+
+    /// CI-friendly cousin of the cargo-fuzz harness: mutated/truncated valid
+    /// shards must produce Ok or Err — never a panic. (A panic fails the
+    /// test; that IS the assertion.)
+    #[test]
+    fn mutated_shards_never_panic() {
+        let mut bytes = Vec::new();
+        make_shard(3, "fz").save_to(&mut bytes).unwrap();
+
+        let mut seed = 0x5eed_ba5eu32;
+        let mut rand = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            seed
+        };
+
+        for round in 0..300 {
+            let mut mutated = bytes.clone();
+            match round % 3 {
+                0 => {
+                    let cut = rand() as usize % mutated.len();
+                    mutated.truncate(cut.max(1));
+                }
+                1 => {
+                    for _ in 0..1 + rand() % 8 {
+                        let at = rand() as usize % mutated.len();
+                        mutated[at] = (rand() & 0xff) as u8;
+                    }
+                }
+                _ => {
+                    let at = rand() as usize % mutated.len();
+                    let len = (rand() as usize % 64).min(mutated.len() - at);
+                    mutated.drain(at..at + len);
+                }
+            }
+
+            let Ok(doc) = Document::load_mem(&mutated) else {
+                continue;
+            };
+            let out = std::env::temp_dir().join(format!("shardpdf-mut-{round}.pdf"));
+            if let Ok(mut assembly) = Assembly::new(&out) {
+                let appended = assembly.append_shard_doc(doc);
+                if appended.is_ok() {
+                    let _ = assembly.finalize(None);
+                }
+            }
+            std::fs::remove_file(&out).ok();
         }
     }
 
@@ -517,6 +585,84 @@ mod tests {
         ));
         drop(assembly);
         std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn cyclic_page_parent_is_rejected() {
+        let out = std::env::temp_dir().join("shardpdf-core-test-parent-cycle.pdf");
+        let mut doc = make_shard(1, "cycle");
+        let page_id = *doc.get_pages().values().next().unwrap();
+        doc.get_object_mut(page_id)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set("Parent", Object::Reference(page_id));
+
+        let mut assembly = Assembly::new(&out).unwrap();
+        let result = assembly.append_shard_doc(doc);
+        std::fs::remove_file(&out).ok();
+        assert!(matches!(
+            result,
+            Err(AssemblyError::Malformed(message)) if message.contains("cycle in /Parent chain")
+        ));
+    }
+
+    #[test]
+    fn outline_survives_write_and_reload() {
+        let out = std::env::temp_dir().join("shardpdf-core-test-outline.pdf");
+        let mut assembly = Assembly::new(&out).unwrap();
+        assembly.append_shard_doc(make_shard(2, "o1")).unwrap();
+        assembly.append_shard_doc(make_shard(2, "o2")).unwrap();
+        let entries = [
+            OutlineEntry {
+                title: "First".into(),
+                page_index: 0,
+                level: 0,
+            },
+            OutlineEntry {
+                title: "동호수".into(),
+                page_index: 1,
+                level: 1,
+            },
+            OutlineEntry {
+                title: "Second".into(),
+                page_index: 2,
+                level: 0,
+            },
+        ];
+        assembly.finalize(Some(&entries)).unwrap();
+        let merged = Document::load(&out).unwrap();
+        std::fs::remove_file(&out).ok();
+
+        let catalog = merged
+            .get_object(merged.trailer.get(b"Root").unwrap().as_reference().unwrap())
+            .unwrap()
+            .as_dict()
+            .unwrap();
+        let outlines_id = catalog.get(b"Outlines").unwrap().as_reference().unwrap();
+        let root = merged.get_object(outlines_id).unwrap().as_dict().unwrap();
+        assert_eq!(root.get(b"Count").unwrap().as_i64().unwrap(), 3);
+
+        let first_id = root.get(b"First").unwrap().as_reference().unwrap();
+        let first = merged.get_object(first_id).unwrap().as_dict().unwrap();
+        assert_eq!(first.get(b"Title").unwrap().as_str().unwrap(), b"First");
+        let dest = first.get(b"Dest").unwrap().as_array().unwrap();
+        let target = dest[0].as_reference().unwrap();
+        let target_type = merged
+            .get_object(target)
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"Type")
+            .unwrap()
+            .as_name()
+            .unwrap();
+        assert_eq!(target_type, b"Page");
+
+        let child_id = first.get(b"First").unwrap().as_reference().unwrap();
+        let child = merged.get_object(child_id).unwrap().as_dict().unwrap();
+        let title = child.get(b"Title").unwrap().as_str().unwrap();
+        assert_eq!(&title[..2], &[0xfe, 0xff], "Korean title is UTF-16BE");
     }
 
     #[test]

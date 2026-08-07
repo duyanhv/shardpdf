@@ -1,0 +1,22 @@
+[package]
+name = "shardpdf-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lopdf = "0.44"
+shardpdf-core = { path = "..", default-features = false }
+
+[[bin]]
+name = "append_shard"
+path = "fuzz_targets/append_shard.rs"
+test = false
+doc = false
+bench = false
