@@ -1,0 +1,31 @@
+{
+  "runner": "merge",
+  "scale": "full",
+  "outcome": "wrong-output",
+  "peakRssBytes": 716046336,
+  "wallTimeMs": 14084,
+  "outputBytes": 20083742,
+  "pageCountReported": 11164,
+  "pageCountActual": 11164,
+  "qpdf": "pass",
+  "linkCheck": "fail",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "machine": {
+    "tag": "local-docker",
+    "node": "v24.19.0",
+    "platform": "linux"
+  },
+  "versions": {
+    "pdf-lib": "1.17.1",
+    "pdfkit": "0.19.1",
+    "@react-pdf/renderer": "4.5.1",
+    "pdf-merger-js": "5.1.2"
+  },
+  "timestamp": "2026-08-07T07:15:28.422Z",
+  "notes": [
+    "500/500 link destination names undefined (e.g. CUST-0001) — links are dead"
+  ]
+}
