@@ -291,7 +291,17 @@ async function runOne(
     const rss = await sampleProcessTreeRss(child.pid);
     if (rss !== null && (peakRss === null || rss > peakRss)) peakRss = rss;
   };
-  await ready;
+  // A runner that dies before READY (import error, bad manifest) must fail
+  // the run, not leave the harness awaiting a handshake that never comes.
+  const exitedEarly = await Promise.race([
+    ready.then(() => false),
+    new Promise<true>((resolve) => child.once("close", () => resolve(true))),
+  ]);
+  if (exitedEarly) {
+    throw new Error(
+      `bind runner exited before READY (${engine}/${mode}): ${stderr.trim() || "no stderr"}`,
+    );
+  }
   await sample();
   const startedAt = Date.now();
   const sampler = setInterval(() => void sample(), 25);

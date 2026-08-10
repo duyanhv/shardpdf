@@ -21,9 +21,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - name: Install qpdf (test oracle, dev-only)
+        run: sudo apt-get update && sudo apt-get install -y qpdf
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run typecheck
@@ -32,6 +37,18 @@ jobs:
       - run: cargo test --workspace
       - name: Test the pure-Rust core used by cargo-fuzz
         run: cargo test --manifest-path crates/core/Cargo.toml --no-default-features
+      - name: Build native binding (debug)
+        working-directory: crates/core
+        run: bun run build
+      - name: Core JS API tests under Node
+        working-directory: crates/core
+        run: node --test "test/*.test.js"
+      - name: Core JS API tests under Bun (floor-inspector runtime)
+        working-directory: crates/core
+        run: bun run test:bun
+      - name: Orchestrator tests
+        working-directory: packages/orchestrator
+        run: node --test "test/*.test.ts"
 
   prebuild:
     name: Prebuild ${{ matrix.target }}
