@@ -49,7 +49,14 @@ process.once("message", (request: WorkerRequest) => {
     } catch (err) {
       reply({
         ok: false,
-        error: err instanceof Error ? (err.stack ?? err.message) : String(err),
+        error:
+          err instanceof Error
+            ? {
+                name: err.name,
+                message: err.message,
+                ...(err.stack !== undefined && { stack: err.stack }),
+              }
+            : { name: "Error", message: String(err) },
       });
     }
   })();

@@ -31,3 +31,23 @@ export class DuplicateAnchorError extends Error {
     this.name = "DuplicateAnchorError";
   }
 }
+
+/** An outline entry references an anchor no shard reported in pass 1. */
+export class UnknownAnchorError extends Error {
+  readonly anchor: string;
+
+  constructor(title: string, anchor: string) {
+    super(`outline entry "${title}" references unknown anchor "${anchor}"`);
+    this.name = "UnknownAnchorError";
+    this.anchor = anchor;
+  }
+}
+
+/** The adapter module cannot be resolved — caught in the parent, before any
+ * worker spawns, so a path typo fails in milliseconds with a clear name. */
+export class AdapterResolutionError extends Error {
+  constructor(module: string, options?: ErrorOptions) {
+    super(`adapter module cannot be resolved: ${module}`, options);
+    this.name = "AdapterResolutionError";
+  }
+}

@@ -212,6 +212,66 @@ test("duplicate anchors across shards are rejected", async () => {
   );
 });
 
+test("worker crashes are retried with a retry progress event", async () => {
+  const outputPath = path.join(workDir, "flaky.pdf");
+  const plan = testPlan();
+  plan.adapter = {
+    module: fileURLToPath(
+      new URL("./fixtures/flaky-adapter.ts", import.meta.url),
+    ),
+    export: "adapter",
+  };
+  const events: ProgressEvent[] = [];
+  const result = await generate(plan, {
+    outputPath,
+    maxPagesPerShard: 4,
+    retries: 1,
+    onProgress: (e) => events.push(e),
+  });
+  assert.equal(result.totalPages, 10);
+  const retries = events.filter((e) => e.phase === "retry");
+  assert.equal(retries.length, 3, "each shard's render retried once");
+  assert.deepEqual(
+    retries.map((e) => [e.done, e.total]),
+    [
+      [2, 2],
+      [2, 2],
+      [2, 2],
+    ],
+  );
+});
+
+test("a bad adapter path fails fast with AdapterResolutionError", async () => {
+  const plan = testPlan();
+  plan.adapter = { module: "/nowhere/does-not-exist.ts", export: "adapter" };
+  await assert.rejects(
+    generate(plan, {
+      outputPath: path.join(workDir, "bad-adapter.pdf"),
+      maxPagesPerShard: 4,
+    }),
+    (err: Error) => err.name === "AdapterResolutionError",
+  );
+});
+
+test("determinism errors keep their name across the worker boundary", async () => {
+  // The lying adapter breaks at assembly (parent side), but a crash INSIDE a
+  // worker must also come back with its original error name via rehydration.
+  const outputPath = path.join(workDir, "rehydrate.pdf");
+  const plan = testPlan();
+  plan.adapter = {
+    module: fileURLToPath(
+      new URL("./fixtures/flaky-adapter.ts", import.meta.url),
+    ),
+    export: "adapter",
+  };
+  await assert.rejects(
+    generate(plan, { outputPath, maxPagesPerShard: 4, retries: 0 }),
+    (err: Error) =>
+      err.name === "ShardRenderError" &&
+      (err.cause as Error).message.includes("synthetic first-attempt crash"),
+  );
+});
+
 test("an aborted signal stops the run", async () => {
   const controller = new AbortController();
   controller.abort();

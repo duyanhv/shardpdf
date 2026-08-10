@@ -7,6 +7,7 @@
 
 pub mod assembler;
 pub mod extract;
+pub mod inspect;
 pub mod outline;
 pub mod serializer;
 

@@ -5,8 +5,8 @@
   "scale": null,
   "iterations": 1,
   "median": {
-    "peakProcessTreeRssBytes": 78233600,
-    "wallTimeMs": 22,
+    "peakProcessTreeRssBytes": 78168064,
+    "wallTimeMs": 28,
     "outputBytes": 3055646
   },
   "samples": [
@@ -17,8 +17,8 @@
       "fixture": "production-smoke",
       "scale": null,
       "outcome": "ok",
-      "peakProcessTreeRssBytes": 78233600,
-      "wallTimeMs": 22,
+      "peakProcessTreeRssBytes": 78168064,
+      "wallTimeMs": 28,
       "outputBytes": 3055646,
       "pageCountReported": 57,
       "pageCountActual": 57,
@@ -39,11 +39,11 @@
         "qpdf": "qpdf version 12.3.2",
         "shardpdf": "0.1.0"
       },
-      "timestamp": "2026-08-10T01:48:46.082Z",
+      "timestamp": "2026-08-10T02:30:57.950Z",
       "notes": [
-        "range unit: 6ms (2p)",
-        "range block: 7ms (30p)",
-        "range section-span: 6ms (25p)"
+        "range unit: 9ms (2p)",
+        "range block: 8ms (30p)",
+        "range section-span: 7ms (25p)"
       ]
     }
   ]

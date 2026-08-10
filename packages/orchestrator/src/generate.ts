@@ -1,8 +1,15 @@
+import { existsSync } from "node:fs";
 import { rename, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { availableParallelism } from "node:os";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { Assembly } from "@shardpdf/core";
-import { DeterminismError, DuplicateAnchorError } from "./errors.ts";
+import {
+  AdapterResolutionError,
+  DeterminismError,
+  DuplicateAnchorError,
+  UnknownAnchorError,
+} from "./errors.ts";
 import { contentHash } from "./hash.ts";
 import { ShardCache } from "./manifest.ts";
 import { WorkerPool } from "./pool.ts";
@@ -42,6 +49,14 @@ export async function generate<TData>(
       : resolvePath(plan.adapter.module),
     ...(plan.adapter.export !== undefined && { export: plan.adapter.export }),
   };
+  // Fail a path typo here, in milliseconds — not inside the first worker.
+  if (!existsSync(adapter.module)) {
+    try {
+      createRequire(import.meta.url).resolve(plan.adapter.module);
+    } catch (err) {
+      throw new AdapterResolutionError(plan.adapter.module, { cause: err });
+    }
+  }
   const shards = partition(
     { ...plan, adapter },
     options.maxPagesPerShard ?? 500,
@@ -55,15 +70,24 @@ export async function generate<TData>(
   );
   await cache.open();
 
+  const emit = (event: ProgressEvent): void => options.onProgress?.(event);
+
+  const retries = options.retries ?? 1;
   const pool = new WorkerPool({
     concurrency:
       options.concurrency ??
       Math.min(4, Math.max(1, availableParallelism() - 1)),
-    retries: options.retries ?? 1,
+    retries,
+    onRetry: (task, attempt) =>
+      emit({
+        phase: "retry",
+        shardIndex: task.shard.index,
+        done: attempt,
+        total: retries + 1,
+        cached: false,
+      }),
     ...(signal !== undefined && { signal }),
   });
-
-  const emit = (event: ProgressEvent): void => options.onProgress?.(event);
 
   // Pass 1 — measure (cache-aware, all shards concurrent under the pool cap).
   let measured = 0;
@@ -156,9 +180,7 @@ export async function generate<TData>(
   const outlineEntries = options.outline?.map((spec) => {
     const page = anchorPages[spec.anchor];
     if (page === undefined) {
-      throw new Error(
-        `outline entry "${spec.title}" references unknown anchor "${spec.anchor}"`,
-      );
+      throw new UnknownAnchorError(spec.title, spec.anchor);
     }
     return { title: spec.title, pageIndex: page - 1, level: spec.level ?? 0 };
   });

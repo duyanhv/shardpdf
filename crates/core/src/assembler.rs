@@ -30,6 +30,25 @@ pub enum AssemblyError {
     Pdf(lopdf::Error),
     Io(std::io::Error),
     Malformed(String),
+    DuplicateDestination(String),
+    InvalidRange(String),
+    DanglingDestination(String),
+}
+
+impl AssemblyError {
+    /// Stable machine-readable code — the JS wrapper exposes this as
+    /// `ShardPdfError.code`, so consumers branch on codes, never on message
+    /// prose. Codes are API: add, don't rename.
+    pub fn code(&self) -> &'static str {
+        match self {
+            AssemblyError::Pdf(_) => "PDF_PARSE",
+            AssemblyError::Io(_) => "IO",
+            AssemblyError::Malformed(_) => "MALFORMED_SHARD",
+            AssemblyError::DuplicateDestination(_) => "DUPLICATE_DESTINATION",
+            AssemblyError::InvalidRange(_) => "INVALID_RANGE",
+            AssemblyError::DanglingDestination(_) => "DANGLING_DESTINATION",
+        }
+    }
 }
 
 impl fmt::Display for AssemblyError {
@@ -38,6 +57,13 @@ impl fmt::Display for AssemblyError {
             AssemblyError::Pdf(e) => write!(f, "pdf error: {e}"),
             AssemblyError::Io(e) => write!(f, "io error: {e}"),
             AssemblyError::Malformed(msg) => write!(f, "malformed shard: {msg}"),
+            AssemblyError::DuplicateDestination(msg) => {
+                write!(f, "duplicate named destination: {msg}")
+            }
+            AssemblyError::InvalidRange(msg) => write!(f, "invalid page range: {msg}"),
+            AssemblyError::DanglingDestination(msg) => {
+                write!(f, "dangling named destination: {msg}")
+            }
         }
     }
 }
@@ -169,8 +195,8 @@ impl Assembly {
             .windows(2)
             .find(|pair| pair[0].0 == pair[1].0)
         {
-            return Err(AssemblyError::Malformed(format!(
-                "duplicate named destination {:?}",
+            return Err(AssemblyError::DuplicateDestination(format!(
+                "{:?}",
                 String::from_utf8_lossy(&duplicate[0].0)
             )));
         }
@@ -316,7 +342,7 @@ pub(crate) fn push_down_inherited(shard: &mut Document, pages: &[ObjectId]) -> R
 
 /// Collects (name, destination) pairs from the shard's catalog — both the
 /// /Names/Dests name tree (PDF 1.2+) and the legacy /Dests dictionary.
-fn extract_named_dests(shard: &Document) -> Result<Vec<(Vec<u8>, Object)>> {
+pub(crate) fn extract_named_dests(shard: &Document) -> Result<Vec<(Vec<u8>, Object)>> {
     let mut out = Vec::new();
     let catalog = shard.get_object(trailer_root(shard)?)?.as_dict()?;
 
@@ -552,8 +578,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(AssemblyError::Malformed(message))
-                if message.contains("duplicate named destination")
+            Err(AssemblyError::DuplicateDestination(message)) if message.contains("dup-p0")
         ));
     }
 
