@@ -12,7 +12,7 @@ const { tmpdir } = require("node:os");
 const path = require("node:path");
 const { after, before, test } = require("node:test");
 const { promisify } = require("node:util");
-const { Assembly, assemble } = require("..");
+const { Assembly, assemble, extractPages } = require("..");
 
 const execFileP = promisify(execFile);
 const seedPath = path.join(
@@ -98,6 +98,42 @@ test("a failed assembly never replaces an existing final file", async () => {
   await assert.rejects(assemble({ shards: [invalidPath], outputPath }));
   assert.equal(await readFile(outputPath, "utf8"), "existing output");
   assert.deepEqual(await partialsFor(outputPath), []);
+});
+
+test("extractPages slices a range out of an assembled document", async () => {
+  const sourcePath = path.join(workDir, "extract-source.pdf");
+  await assemble({
+    shards: [seedPath, plainShardPath, plainShardPath, plainShardPath],
+    outputPath: sourcePath,
+  }); // 5 pages: seed(2) + plain(1) x 3 — plain shards carry no named dests
+
+  const outputPath = path.join(workDir, "extract-slice.pdf");
+  const count = extractPages(sourcePath, 2, 4, outputPath);
+  assert.equal(count, 3);
+  assert.ok((await stat(outputPath)).size > 0);
+  if (await qpdfAvailable()) {
+    const { stdout } = await execFileP("qpdf", ["--show-npages", outputPath]);
+    assert.equal(Number(stdout.trim()), 3);
+    await execFileP("qpdf", ["--check", outputPath]);
+  }
+});
+
+test("extractPages rejects out-of-range and inverted ranges", async () => {
+  const sourcePath = path.join(workDir, "extract-bad-source.pdf");
+  await assemble({ shards: [seedPath], outputPath: sourcePath }); // 2 pages
+
+  const outputPath = path.join(workDir, "extract-bad.pdf");
+  for (const [start, end] of [
+    [0, 1],
+    [2, 1],
+    [1, 3],
+  ]) {
+    assert.throws(
+      () => extractPages(sourcePath, start, end, outputPath),
+      /malformed/i,
+      `range ${start}-${end} must be rejected`,
+    );
+  }
 });
 
 test("low-level abort consumes the assembly and closes its writer", async () => {

@@ -6,6 +6,7 @@
 #![deny(clippy::all)]
 
 pub mod assembler;
+pub mod extract;
 pub mod outline;
 pub mod serializer;
 

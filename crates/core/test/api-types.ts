@@ -3,7 +3,11 @@ import {
   type AssembleResult,
   Assembly,
   assemble,
+  extractPages,
 } from "../index.js";
+
+const extracted: number = extractPages("report.pdf", 10, 20, "slice.pdf");
+void extracted;
 
 const options: AssembleOptions = {
   shards: ["shard-0.pdf", "shard-1.pdf"],

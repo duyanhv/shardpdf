@@ -1,8 +1,29 @@
 //! napi bindings (feature `node`). All orchestration lives in TypeScript;
 //! this file only marshals across the boundary.
 
-use crate::{assembler, outline};
+use crate::{assembler, extract, outline};
 use napi_derive::napi;
+
+/// Extract an inclusive, 1-based page range from `inputPath` into
+/// `outputPath`, copying only objects the selected pages reach. Returns the
+/// extracted page count. v1 drops link annotations, named destinations, and
+/// outlines from the result — parity note: a qpdf page slice also loses
+/// bookmarks, and keeps links only as silently-dangling targets.
+#[napi]
+pub fn extract_pages(
+    input_path: String,
+    start_page: u32,
+    end_page: u32,
+    output_path: String,
+) -> napi::Result<u32> {
+    extract::extract_pages(
+        std::path::Path::new(&input_path),
+        start_page,
+        end_page,
+        std::path::Path::new(&output_path),
+    )
+    .map_err(to_napi_err)
+}
 
 /// One bookmark in the document outline (flat preorder list; `level` gives
 /// nesting — a child is exactly one level deeper than its parent).

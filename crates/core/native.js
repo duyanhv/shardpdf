@@ -701,3 +701,4 @@ if (!nativeBinding) {
 
 module.exports = nativeBinding
 module.exports.Assembly = nativeBinding.Assembly
+module.exports.extractPages = nativeBinding.extractPages

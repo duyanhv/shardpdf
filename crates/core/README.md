@@ -25,3 +25,9 @@ signal is observed.
 
 The low-level `Assembly` class remains available when callers need to append and
 delete shards one at a time. Call `abort()` to close an unfinished assembly.
+
+`extractPages(inputPath, startPage, endPage, outputPath)` slices an inclusive,
+1-based page range into a new PDF, copying only objects the selected pages
+reach (a `qpdf --pages` replacement for selective downloads). v1 drops link
+annotations, named destinations, and outlines from the slice — a qpdf slice
+also loses bookmarks, and keeps links only as silently dangling targets.

@@ -13,6 +13,15 @@ export declare class Assembly {
 }
 
 /**
+ * Extract an inclusive, 1-based page range from `inputPath` into
+ * `outputPath`, copying only objects the selected pages reach. Returns the
+ * extracted page count. v1 drops link annotations, named destinations, and
+ * outlines from the result — parity note: a qpdf page slice also loses
+ * bookmarks, and keeps links only as silently-dangling targets.
+ */
+export declare function extractPages(inputPath: string, startPage: number, endPage: number, outputPath: string): number
+
+/**
  * One bookmark in the document outline (flat preorder list; `level` gives
  * nesting — a child is exactly one level deeper than its parent).
  */
