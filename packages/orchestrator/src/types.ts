@@ -72,7 +72,9 @@ export interface RendererAdapter<TData = unknown> {
 }
 
 export interface ProgressEvent {
-  phase: "measure" | "render" | "assemble";
+  /** "retry" fires before a task re-attempt: done = attempt number (2-based),
+   * total = maximum attempts. */
+  phase: "measure" | "render" | "assemble" | "retry";
   shardIndex: number;
   done: number;
   total: number;

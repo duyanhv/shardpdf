@@ -1,7 +1,10 @@
+export { defineAdapter } from "./adapter.ts";
 export {
+  AdapterResolutionError,
   DeterminismError,
   DuplicateAnchorError,
   ShardRenderError,
+  UnknownAnchorError,
 } from "./errors.ts";
 export { generate } from "./generate.ts";
 export { contentHash, stableStringify } from "./hash.ts";

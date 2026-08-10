@@ -115,13 +115,21 @@ async function runExtract(
         slicePath,
       ]);
     } else {
-      const { extractPages } = await import("@shardpdf/core");
-      const extracted = extractPages(
-        sourcePath,
-        range.startPage,
-        range.endPage,
-        slicePath,
-      );
+      // extract() parses the source once per call; per-range timing here
+      // intentionally re-opens per range so qpdf and shardpdf rows stay
+      // one-request-per-slice comparable (their production request shape).
+      const { extract } = await import("@shardpdf/core");
+      const result = await extract({
+        input: sourcePath,
+        ranges: [
+          {
+            startPage: range.startPage,
+            endPage: range.endPage,
+            output: slicePath,
+          },
+        ],
+      });
+      const extracted = result.ranges[0]?.pageCount;
       if (extracted !== expected) {
         throw new Error(
           `range ${range.name}: extracted ${extracted} pages, expected ${expected}`,

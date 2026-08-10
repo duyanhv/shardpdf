@@ -12,7 +12,15 @@ const { tmpdir } = require("node:os");
 const path = require("node:path");
 const { after, before, test } = require("node:test");
 const { promisify } = require("node:util");
-const { Assembly, assemble, extractPages } = require("..");
+const {
+  Assembly,
+  ShardPdfError,
+  assemble,
+  extract,
+  extractPages,
+  pageCount,
+  validate,
+} = require("..");
 
 const execFileP = promisify(execFile);
 const seedPath = path.join(
@@ -66,10 +74,31 @@ test("assemble cleans partial output after a shard error", async () => {
 
   await assert.rejects(
     assemble({ shards: [seedPath, invalidPath], outputPath }),
-    /pdf error/i,
+    (error) =>
+      error instanceof ShardPdfError &&
+      error.code === "PDF_PARSE" &&
+      !error.message.startsWith("["),
   );
   await assert.rejects(stat(outputPath), { code: "ENOENT" });
   assert.deepEqual(await partialsFor(outputPath), []);
+});
+
+test("errors carry stable codes, not just message prose", async () => {
+  const outputPath = path.join(workDir, "codes.pdf");
+  await assert.rejects(
+    assemble({ shards: [seedPath, seedPath], outputPath }),
+    (error) =>
+      error instanceof ShardPdfError && error.code === "DUPLICATE_DESTINATION",
+  );
+
+  const assembly = new Assembly(path.join(workDir, "codes-low.partial"));
+  assembly.abort();
+  assert.throws(
+    () => assembly.appendShard(seedPath),
+    (error) =>
+      error instanceof ShardPdfError && error.code === "ALREADY_FINALIZED",
+  );
+  await rm(path.join(workDir, "codes-low.partial"));
 });
 
 test("assemble observes cancellation between shard appends", async () => {
@@ -118,7 +147,7 @@ test("extractPages slices a range out of an assembled document", async () => {
   }
 });
 
-test("extractPages rejects out-of-range and inverted ranges", async () => {
+test("extractPages rejects out-of-range and inverted ranges with INVALID_RANGE", async () => {
   const sourcePath = path.join(workDir, "extract-bad-source.pdf");
   await assemble({ shards: [seedPath], outputPath: sourcePath }); // 2 pages
 
@@ -130,10 +159,72 @@ test("extractPages rejects out-of-range and inverted ranges", async () => {
   ]) {
     assert.throws(
       () => extractPages(sourcePath, start, end, outputPath),
-      /malformed/i,
+      (error) =>
+        error instanceof ShardPdfError && error.code === "INVALID_RANGE",
       `range ${start}-${end} must be rejected`,
     );
   }
+});
+
+test("extract slices many ranges from one parse and cleans up on failure", async () => {
+  const sourcePath = path.join(workDir, "extract-multi-source.pdf");
+  await assemble({
+    shards: [seedPath, plainShardPath, plainShardPath],
+    outputPath: sourcePath,
+  }); // 4 pages
+
+  const result = await extract({
+    input: sourcePath,
+    ranges: [
+      { startPage: 1, endPage: 2, output: path.join(workDir, "multi-a.pdf") },
+      { startPage: 2, endPage: 4, output: path.join(workDir, "multi-b.pdf") },
+    ],
+  });
+  assert.equal(result.sourcePageCount, 4);
+  assert.deepEqual(
+    result.ranges.map((r) => r.pageCount),
+    [2, 3],
+  );
+  assert.equal(pageCount(path.join(workDir, "multi-a.pdf")), 2);
+  assert.equal(pageCount(path.join(workDir, "multi-b.pdf")), 3);
+
+  // Second range invalid → the already-written first slice must be removed.
+  const goodSlice = path.join(workDir, "multi-cleanup.pdf");
+  await assert.rejects(
+    extract({
+      input: sourcePath,
+      ranges: [
+        { startPage: 1, endPage: 1, output: goodSlice },
+        {
+          startPage: 3,
+          endPage: 99,
+          output: path.join(workDir, "multi-x.pdf"),
+        },
+      ],
+    }),
+    (error) => error instanceof ShardPdfError && error.code === "INVALID_RANGE",
+  );
+  await assert.rejects(stat(goodSlice), { code: "ENOENT" });
+});
+
+test("pageCount and validate work without qpdf", async () => {
+  const sourcePath = path.join(workDir, "inspect-source.pdf");
+  await assemble({
+    shards: [seedPath, plainShardPath],
+    outputPath: sourcePath,
+  });
+
+  assert.equal(pageCount(sourcePath), 3);
+  const report = validate(sourcePath);
+  assert.equal(report.pageCount, 3);
+  assert.equal(report.namedDestinations, 2); // seed shard's two dests
+
+  const notPdf = path.join(workDir, "not-a.pdf");
+  await writeFile(notPdf, "nope");
+  assert.throws(
+    () => validate(notPdf),
+    (error) => error instanceof ShardPdfError && error.code === "PDF_PARSE",
+  );
 });
 
 test("low-level abort consumes the assembly and closes its writer", async () => {

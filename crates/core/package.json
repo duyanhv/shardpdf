@@ -27,5 +27,20 @@
   "devDependencies": {
     "@napi-rs/cli": "^3.8.2",
     "@types/node": "^24"
-  }
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "require": "./index.js",
+      "import": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "native.js",
+    "native.d.ts",
+    "README.md",
+    "*.node"
+  ]
 }

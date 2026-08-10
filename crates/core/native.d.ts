@@ -13,6 +13,18 @@ export declare class Assembly {
 }
 
 /**
+ * Parses a source PDF once and serves any number of page-range extractions
+ * from it — the multi-slice selective-download pattern.
+ */
+export declare class Extractor {
+  constructor(inputPath: string)
+  /** Total pages in the parsed source. */
+  get pageCount(): number
+  /** Extracts one inclusive, 1-based range; returns the slice's page count. */
+  extractRange(startPage: number, endPage: number, outputPath: string): number
+}
+
+/**
  * Extract an inclusive, 1-based page range from `inputPath` into
  * `outputPath`, copying only objects the selected pages reach. Returns the
  * extracted page count. v1 drops link annotations, named destinations, and
@@ -20,6 +32,13 @@ export declare class Assembly {
  * bookmarks, and keeps links only as silently-dangling targets.
  */
 export declare function extractPages(inputPath: string, startPage: number, endPage: number, outputPath: string): number
+
+/** One inclusive, 1-based page range for multi-slice extraction. */
+export interface ExtractRangeSpec {
+  startPage: number
+  endPage: number
+  outputPath: string
+}
 
 /**
  * One bookmark in the document outline (flat preorder list; `level` gives
@@ -30,4 +49,19 @@ export interface OutlineEntry {
   /** 0-based absolute page index in the assembled document. */
   pageIndex: number
   level: number
+}
+
+/** Parses the document and returns its page count. */
+export declare function pageCount(inputPath: string): number
+
+/**
+ * Structural validation: parses, resolves every page, and verifies every
+ * named destination targets a live page (the corruption qpdf --check misses).
+ */
+export declare function validate(inputPath: string): ValidationReport
+
+/** Structural validation summary. */
+export interface ValidationReport {
+  pageCount: number
+  namedDestinations: number
 }

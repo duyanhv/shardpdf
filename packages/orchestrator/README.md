@@ -31,6 +31,24 @@ const result = await generate(
 
 ## Adapter contract
 
+Author adapters through `defineAdapter<TData>()` — it types the section-data
+contract at the definition site (the process boundary otherwise erases it)
+and rejects malformed adapters immediately:
+
+```ts
+import { defineAdapter } from "@shardpdf/orchestrator";
+export const adapter = defineAdapter<MySectionData>({
+  measure(shard) { /* ... */ },
+  render(shard, ctx) { /* ... */ },
+});
+```
+
+A plan whose `adapter.module` cannot be resolved fails in the parent with
+`AdapterResolutionError` before any worker spawns. Worker retries surface as
+`phase: "retry"` progress events, and errors thrown inside workers keep their
+original `name` across the process boundary.
+
+
 An adapter module exports a `RendererAdapter`: `measure(shard, ctx)` returns
 `{ pageCount, anchors }`; `render(shard, ctx)` writes a complete single-shard
 PDF to `ctx.outputPath` using the global context (`pageOffset`, `totalPages`,

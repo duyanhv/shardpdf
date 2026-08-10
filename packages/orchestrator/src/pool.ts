@@ -25,7 +25,7 @@ export type WorkerRequest =
 
 export type WorkerResponse =
   | { ok: true; result: MeasureResult | null }
-  | { ok: false; error: string };
+  | { ok: false; error: { name: string; message: string; stack?: string } };
 
 const WORKER_PATH = fileURLToPath(new URL("./worker.ts", import.meta.url));
 
@@ -43,14 +43,21 @@ export class WorkerPool {
   private running = 0;
   private waiters: (() => void)[] = [];
 
+  private readonly onRetry:
+    | ((task: WorkerRequest, attempt: number, error: unknown) => void)
+    | undefined;
+
   constructor(options: {
     concurrency: number;
     retries: number;
     signal?: AbortSignal;
+    /** Called before each re-attempt (attempt is 2-based: the retry number). */
+    onRetry?: (task: WorkerRequest, attempt: number, error: unknown) => void;
   }) {
     this.concurrency = Math.max(1, options.concurrency);
     this.retries = Math.max(0, options.retries);
     this.signal = options.signal;
+    this.onRetry = options.onRetry;
     this.signal?.addEventListener("abort", () => {
       for (const child of this.active) child.kill("SIGKILL");
     });
@@ -62,6 +69,7 @@ export class WorkerPool {
       let lastError: unknown;
       for (let attempt = 0; attempt <= this.retries; attempt++) {
         this.signal?.throwIfAborted();
+        if (attempt > 0) this.onRetry?.(task, attempt + 1, lastError);
         try {
           return await this.runOnce(task);
         } catch (err) {
@@ -98,7 +106,12 @@ export class WorkerPool {
         if (message.ok) {
           settle(() => resolve(message.result));
         } else {
-          settle(() => reject(new Error(message.error)));
+          // Rehydrate so DeterminismError etc. keep their name across IPC.
+          const error = new Error(message.error.message);
+          error.name = message.error.name;
+          if (message.error.stack !== undefined)
+            error.stack = message.error.stack;
+          settle(() => reject(error));
         }
         child.kill();
       });

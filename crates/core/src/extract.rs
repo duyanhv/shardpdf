@@ -1,6 +1,7 @@
-//! Page-range extraction: the qpdfExtractPages replacement. Pulls an
-//! inclusive, 1-based page range out of a source PDF into a new document,
-//! copying only objects reachable from the selected pages.
+//! Page-range extraction: the qpdf page-slice replacement. An `Extractor`
+//! parses the source once and serves any number of inclusive, 1-based range
+//! extractions from it — the multi-slice selective-download pattern — copying
+//! into each output only objects the selected pages reach.
 //!
 //! v1 scope (documented, matches the selective-download use case it serves):
 //! - Link annotations are dropped from extracted pages. (qpdf keeps them, but
@@ -8,88 +9,109 @@
 //!   dead one.)
 //! - Named destinations and outlines are not carried over — same behavior as
 //!   a qpdf page slice, whose output has no bookmarks either.
-//! - Working set is O(source parse + extracted objects), not O(one shard):
-//!   extraction reads an existing document, it does not stream shards.
+//! - Working set is O(source parse + one slice), not O(one shard): extraction
+//!   reads an existing document, it does not stream shards.
 
-use crate::assembler::{Assembly, AssemblyError, Result};
-use lopdf::{dictionary, Document, Object, ObjectId};
+use crate::assembler::{push_down_inherited, Assembly, AssemblyError, Result};
+use lopdf::{dictionary, Dictionary, Document, Object, ObjectId};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
+pub struct Extractor {
+    source: Document,
+    pages: Vec<ObjectId>,
+}
+
+impl Extractor {
+    pub fn open(input_path: &Path) -> Result<Self> {
+        let mut source = Document::load(input_path)?;
+        let pages: Vec<ObjectId> = source.get_pages().into_values().collect();
+        // Selected pages must be self-contained before their parent chain is
+        // cut away; pushing down once up front covers every later range.
+        push_down_inherited(&mut source, &pages)?;
+        Ok(Extractor { source, pages })
+    }
+
+    pub fn page_count(&self) -> u32 {
+        self.pages.len() as u32
+    }
+
+    /// Extracts an inclusive, 1-based page range into `output_path`. The
+    /// source stays intact, so ranges may overlap and repeat freely.
+    pub fn extract_range(&self, start_page: u32, end_page: u32, output_path: &Path) -> Result<u32> {
+        let total = self.pages.len() as u32;
+        if start_page < 1 || start_page > end_page || end_page > total {
+            return Err(AssemblyError::InvalidRange(format!(
+                "{start_page}-{end_page} (1-based inclusive, document has {total} pages)"
+            )));
+        }
+        let selected: Vec<ObjectId> =
+            self.pages[(start_page as usize - 1)..(end_page as usize)].to_vec();
+        let selected_set: BTreeSet<ObjectId> = selected.iter().copied().collect();
+
+        let reachable = reachable_from(&self.source, &selected, &selected_set)?;
+        let mut objects: BTreeMap<ObjectId, Object> = BTreeMap::new();
+        for id in reachable {
+            let object = self.source.objects.get(&id).ok_or_else(|| {
+                AssemblyError::Malformed(format!(
+                    "object {} {} referenced but missing from source",
+                    id.0, id.1
+                ))
+            })?;
+            objects.insert(id, object.clone());
+        }
+
+        let mut pruned = Document::with_version("1.7");
+        pruned.objects = objects;
+        pruned.max_id = pruned.objects.keys().map(|id| id.0).max().unwrap_or(0);
+        let pages_root = pruned.add_object(dictionary! {
+            "Type" => "Pages",
+            "Count" => selected.len() as i64,
+            "Kids" => selected
+                .iter()
+                .map(|&id| Object::Reference(id))
+                .collect::<Vec<Object>>(),
+        });
+        for &page_id in &selected {
+            let page = pruned.get_object_mut(page_id)?.as_dict_mut()?;
+            // Parent would drag in the old page tree; the assembler assigns
+            // the new parent. Annots are out of v1 scope.
+            page.remove(b"Parent");
+            page.remove(b"Annots");
+            page.set("Parent", Object::Reference(pages_root));
+        }
+        let catalog = pruned.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => Object::Reference(pages_root),
+        });
+        pruned.trailer.set("Root", Object::Reference(catalog));
+
+        let mut assembly = Assembly::new(output_path)?;
+        let count = assembly.append_shard_doc(pruned)?;
+        assembly.finalize(None)?;
+        Ok(count)
+    }
+}
+
+/// Single-range convenience over a one-shot [`Extractor`].
 pub fn extract_pages(
     input_path: &Path,
     start_page: u32,
     end_page: u32,
     output_path: &Path,
 ) -> Result<u32> {
-    if start_page < 1 || start_page > end_page {
-        return Err(AssemblyError::Malformed(format!(
-            "invalid page range {start_page}-{end_page} (1-based, inclusive)"
-        )));
-    }
-
-    let mut source = Document::load(input_path)?;
-    let all_pages: Vec<ObjectId> = source.get_pages().into_values().collect();
-    let total = all_pages.len() as u32;
-    if end_page > total {
-        return Err(AssemblyError::Malformed(format!(
-            "page range {start_page}-{end_page} exceeds document length {total}"
-        )));
-    }
-    let selected: Vec<ObjectId> =
-        all_pages[(start_page as usize - 1)..(end_page as usize)].to_vec();
-
-    // Selected pages must be self-contained before their parent chain and
-    // sibling pages are cut away.
-    crate::assembler::push_down_inherited(&mut source, &selected)?;
-    for &page_id in &selected {
-        let page = source.get_object_mut(page_id)?.as_dict_mut()?;
-        // Parent would drag in the old page tree (and with it every page);
-        // the assembler assigns the new parent. Annots are out of v1 scope.
-        page.remove(b"Parent");
-        page.remove(b"Annots");
-    }
-
-    // Everything the selected pages reach — content streams, resources,
-    // fonts, images — and nothing else.
-    let reachable = reachable_from(&source, &selected)?;
-    let mut objects: BTreeMap<ObjectId, Object> = BTreeMap::new();
-    for id in reachable {
-        if let Some(object) = source.objects.remove(&id) {
-            objects.insert(id, object);
-        }
-    }
-
-    let mut pruned = Document::with_version("1.7");
-    pruned.objects = objects;
-    pruned.max_id = pruned.objects.keys().map(|id| id.0).max().unwrap_or(0);
-    let pages_root = pruned.add_object(dictionary! {
-        "Type" => "Pages",
-        "Count" => selected.len() as i64,
-        "Kids" => selected
-            .iter()
-            .map(|&id| Object::Reference(id))
-            .collect::<Vec<Object>>(),
-    });
-    for &page_id in &selected {
-        let page = pruned.get_object_mut(page_id)?.as_dict_mut()?;
-        page.set("Parent", Object::Reference(pages_root));
-    }
-    let catalog = pruned.add_object(dictionary! {
-        "Type" => "Catalog",
-        "Pages" => Object::Reference(pages_root),
-    });
-    pruned.trailer.set("Root", Object::Reference(catalog));
-
-    let mut assembly = Assembly::new(output_path)?;
-    let count = assembly.append_shard_doc(pruned)?;
-    assembly.finalize(None)?;
-    Ok(count)
+    Extractor::open(input_path)?.extract_range(start_page, end_page, output_path)
 }
 
-/// BFS over indirect references starting at `roots`. Missing targets are an
-/// error: an extracted document must never contain dangling references.
-fn reachable_from(doc: &Document, roots: &[ObjectId]) -> Result<BTreeSet<ObjectId>> {
+/// BFS over indirect references starting at the selected pages. Page dicts
+/// traverse with /Parent and /Annots skipped — Parent would pull in the whole
+/// page tree (and every sibling page), Annots are out of v1 scope. Missing
+/// targets are an error: an extract must never contain dangling references.
+fn reachable_from(
+    doc: &Document,
+    roots: &[ObjectId],
+    page_dicts: &BTreeSet<ObjectId>,
+) -> Result<BTreeSet<ObjectId>> {
     let mut seen: BTreeSet<ObjectId> = roots.iter().copied().collect();
     let mut queue: VecDeque<ObjectId> = roots.iter().copied().collect();
     while let Some(id) = queue.pop_front() {
@@ -100,7 +122,13 @@ fn reachable_from(doc: &Document, roots: &[ObjectId]) -> Result<BTreeSet<ObjectI
             ))
         })?;
         let mut refs = Vec::new();
-        collect_refs(object, &mut refs);
+        if page_dicts.contains(&id) {
+            if let Ok(dict) = object.as_dict() {
+                collect_page_refs(dict, &mut refs);
+            }
+        } else {
+            collect_refs(object, &mut refs);
+        }
         for target in refs {
             if seen.insert(target) {
                 queue.push_back(target);
@@ -108,6 +136,15 @@ fn reachable_from(doc: &Document, roots: &[ObjectId]) -> Result<BTreeSet<ObjectI
         }
     }
     Ok(seen)
+}
+
+fn collect_page_refs(dict: &Dictionary, out: &mut Vec<ObjectId>) {
+    for (key, value) in dict.iter() {
+        if key == b"Parent" || key == b"Annots" {
+            continue;
+        }
+        collect_refs(value, out);
+    }
 }
 
 fn collect_refs(object: &Object, out: &mut Vec<ObjectId>) {
@@ -169,6 +206,28 @@ mod tests {
     }
 
     #[test]
+    fn one_parse_serves_many_even_overlapping_ranges() {
+        let source = write_source(6, "multi");
+        let extractor = Extractor::open(&source).unwrap();
+        assert_eq!(extractor.page_count(), 6);
+
+        for (start, end, name) in [(1u32, 2u32, "a"), (2, 5, "b"), (1, 6, "c")] {
+            let out = std::env::temp_dir().join(format!("shardpdf-extract-multi-{name}.pdf"));
+            let count = extractor.extract_range(start, end, &out).unwrap();
+            assert_eq!(count, end - start + 1);
+            let doc = Document::load(&out).unwrap();
+            assert_eq!(doc.get_pages().len(), (end - start + 1) as usize);
+            let pages: Vec<ObjectId> = doc.get_pages().into_values().collect();
+            assert!(
+                page_text(&doc, pages[0]).contains(&format!("src-p{}", start - 1)),
+                "first page of {name} is source page {start}"
+            );
+            std::fs::remove_file(&out).ok();
+        }
+        std::fs::remove_file(&source).ok();
+    }
+
+    #[test]
     fn extracted_pages_keep_inherited_attributes() {
         let source = write_source(3, "inherit");
         let (_, doc) = extract_to(&source, 2, 2, "inherit").unwrap();
@@ -199,15 +258,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_ranges() {
+    fn rejects_invalid_ranges_with_the_range_code() {
         let source = write_source(3, "ranges");
         for (start, end) in [(0, 1), (2, 1), (1, 4), (5, 9)] {
+            let result = extract_to(&source, start, end, "ranges");
             assert!(
-                matches!(
-                    extract_to(&source, start, end, "ranges"),
-                    Err(AssemblyError::Malformed(_))
-                ),
-                "range {start}-{end} must be rejected"
+                matches!(&result, Err(AssemblyError::InvalidRange(_))),
+                "range {start}-{end} must be InvalidRange"
             );
         }
         std::fs::remove_file(&source).ok();
