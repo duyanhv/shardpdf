@@ -1,5 +1,5 @@
 export type { OutlineEntry } from "./native.js";
-export { Assembly } from "./native.js";
+export { Assembly, extractPages } from "./native.js";
 
 export interface AssembleOutlineEntry {
   title: string;

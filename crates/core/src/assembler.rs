@@ -270,7 +270,7 @@ fn resolve_dict<'a>(doc: &'a Document, obj: &'a Object) -> Result<&'a Dictionary
 
 /// Copies inheritable page-tree attributes onto each page that lacks them,
 /// so pages stay correct after their original parent chain is discarded.
-fn push_down_inherited(shard: &mut Document, pages: &[ObjectId]) -> Result<()> {
+pub(crate) fn push_down_inherited(shard: &mut Document, pages: &[ObjectId]) -> Result<()> {
     for &pid in pages {
         let mut inherited: Vec<(&[u8], Object)> = Vec::new();
         {
@@ -359,15 +359,16 @@ fn walk_name_tree(
     Ok(())
 }
 
+/// Shared fixtures for this module's tests and cross-module tests (extract).
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
     use lopdf::Stream;
 
     /// Minimal but complete shard: n pages of Courier text, inheritable
     /// attributes ONLY on the pages node (exercises push-down), and a named
     /// destination per page in a /Names/Dests tree.
-    fn make_shard(page_count: usize, tag: &str) -> Document {
+    pub(crate) fn make_shard(page_count: usize, tag: &str) -> Document {
         let mut doc = Document::with_version("1.7");
         let font_id = doc.add_object(dictionary! {
             "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Courier",
@@ -423,19 +424,16 @@ mod tests {
         doc
     }
 
-    fn assemble(shards: Vec<Document>, name: &str) -> Document {
-        let out = std::env::temp_dir().join(format!("shardpdf-core-test-{name}.pdf"));
-        let mut assembly = Assembly::new(&out).unwrap();
+    /// Assemble shards into `out`, leaving the file on disk for the caller.
+    pub(crate) fn assemble_to(shards: Vec<Document>, out: &std::path::Path) {
+        let mut assembly = Assembly::new(out).unwrap();
         for shard in shards {
             assembly.append_shard_doc(shard).unwrap();
         }
         assembly.finalize(None).unwrap();
-        let merged = Document::load(&out).unwrap();
-        std::fs::remove_file(&out).ok();
-        merged
     }
 
-    fn page_text(doc: &Document, page_id: ObjectId) -> String {
+    pub(crate) fn page_text(doc: &Document, page_id: ObjectId) -> String {
         let contents = doc
             .get_object(page_id)
             .unwrap()
@@ -450,6 +448,20 @@ mod tests {
             .decompressed_content()
             .unwrap_or_else(|_| stream.content.clone());
         String::from_utf8_lossy(&data).into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{assemble_to, make_shard, page_text};
+    use super::*;
+
+    fn assemble(shards: Vec<Document>, name: &str) -> Document {
+        let out = std::env::temp_dir().join(format!("shardpdf-core-test-{name}.pdf"));
+        assemble_to(shards, &out);
+        let merged = Document::load(&out).unwrap();
+        std::fs::remove_file(&out).ok();
+        merged
     }
 
     #[test]
