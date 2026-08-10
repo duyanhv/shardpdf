@@ -1,0 +1,116 @@
+{
+  "engine": "qpdf",
+  "mode": "merge",
+  "fixture": "production-floor",
+  "scale": null,
+  "iterations": 3,
+  "median": {
+    "peakProcessTreeRssBytes": 515072000,
+    "wallTimeMs": 2548,
+    "outputBytes": 141173312
+  },
+  "samples": [
+    {
+      "iteration": 1,
+      "engine": "qpdf",
+      "mode": "merge",
+      "fixture": "production-floor",
+      "scale": null,
+      "outcome": "wrong-output",
+      "peakProcessTreeRssBytes": 514953216,
+      "wallTimeMs": 2548,
+      "outputBytes": 141173312,
+      "pageCountReported": 9000,
+      "pageCountActual": 9000,
+      "qpdfCheck": "pass",
+      "linkCheck": "fail",
+      "outlineCheck": "skipped",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "docker-768m",
+        "node": "v24.19.0",
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 11.3.0",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-10T01:50:30.550Z",
+      "notes": [
+        "9000/9000 named link destinations are undefined"
+      ]
+    },
+    {
+      "iteration": 2,
+      "engine": "qpdf",
+      "mode": "merge",
+      "fixture": "production-floor",
+      "scale": null,
+      "outcome": "wrong-output",
+      "peakProcessTreeRssBytes": 515162112,
+      "wallTimeMs": 3435,
+      "outputBytes": 141173312,
+      "pageCountReported": 9000,
+      "pageCountActual": 9000,
+      "qpdfCheck": "pass",
+      "linkCheck": "fail",
+      "outlineCheck": "skipped",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "docker-768m",
+        "node": "v24.19.0",
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 11.3.0",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-10T01:50:48.604Z",
+      "notes": [
+        "9000/9000 named link destinations are undefined"
+      ]
+    },
+    {
+      "iteration": 3,
+      "engine": "qpdf",
+      "mode": "merge",
+      "fixture": "production-floor",
+      "scale": null,
+      "outcome": "wrong-output",
+      "peakProcessTreeRssBytes": 515072000,
+      "wallTimeMs": 1945,
+      "outputBytes": 141173312,
+      "pageCountReported": 9000,
+      "pageCountActual": 9000,
+      "qpdfCheck": "pass",
+      "linkCheck": "fail",
+      "outlineCheck": "skipped",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "docker-768m",
+        "node": "v24.19.0",
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 11.3.0",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-10T01:51:05.586Z",
+      "notes": [
+        "9000/9000 named link destinations are undefined"
+      ]
+    }
+  ]
+}

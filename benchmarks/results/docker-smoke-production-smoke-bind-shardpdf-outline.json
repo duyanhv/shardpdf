@@ -1,0 +1,46 @@
+{
+  "engine": "shardpdf",
+  "mode": "outline",
+  "fixture": "production-smoke",
+  "scale": null,
+  "iterations": 1,
+  "median": {
+    "peakProcessTreeRssBytes": 76832768,
+    "wallTimeMs": 12,
+    "outputBytes": 2225990
+  },
+  "samples": [
+    {
+      "iteration": 1,
+      "engine": "shardpdf",
+      "mode": "outline",
+      "fixture": "production-smoke",
+      "scale": null,
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 76832768,
+      "wallTimeMs": 12,
+      "outputBytes": 2225990,
+      "pageCountReported": 36,
+      "pageCountActual": 36,
+      "qpdfCheck": "pass",
+      "linkCheck": "pass",
+      "outlineCheck": "pass",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "docker-smoke",
+        "node": "v24.19.0",
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 11.3.0",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-10T01:49:58.145Z",
+      "notes": []
+    }
+  ]
+}

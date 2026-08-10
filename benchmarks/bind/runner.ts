@@ -20,19 +20,24 @@ const outputPath = process.argv[5];
 
 if (
   (engine !== "qpdf" && engine !== "shardpdf") ||
-  (mode !== "merge" && mode !== "outline") ||
+  (mode !== "merge" && mode !== "outline" && mode !== "extract") ||
   manifestPath === undefined ||
   outputPath === undefined
 ) {
   console.error(
-    "usage: node runner.ts <qpdf|shardpdf> <merge|outline> <manifest> <output>",
+    "usage: node runner.ts <qpdf|shardpdf> <merge|outline|extract> <manifest> <output>",
   );
   process.exit(2);
 }
 
+let lastRangeTimings: BindRunnerReport["ranges"];
+
 void main(engine, mode, manifestPath, outputPath).then(
   (pageCount) => {
-    const report: BindRunnerReport = { pageCount };
+    const report: BindRunnerReport = {
+      pageCount,
+      ...(lastRangeTimings !== undefined && { ranges: lastRangeTimings }),
+    };
     console.log(JSON.stringify(report));
   },
   (error) => {
@@ -68,10 +73,70 @@ async function run(
   const fixtureDir = path.dirname(fixtureManifestPath);
   const shards = fixture.shards.map((shard) => path.join(fixtureDir, shard));
 
+  if (selectedMode === "extract") {
+    return runExtract(selectedEngine, fixture, fixtureDir, outPath);
+  }
   if (selectedEngine === "qpdf") {
     return runQpdf(selectedMode, shards, fixture, outPath);
   }
   return runShardpdf(selectedMode, shards, fixture, outPath);
+}
+
+/**
+ * Selective-download shape: slice each manifest range out of the pre-bound
+ * source.pdf (produced unmeasured by the harness with qpdf, mirroring a
+ * cached full report). Slices land beside outPath for the harness to verify.
+ */
+async function runExtract(
+  selectedEngine: BindEngine,
+  fixture: BindFixtureManifest,
+  fixtureDir: string,
+  outPath: string,
+): Promise<number> {
+  const ranges = fixture.extractRanges ?? [];
+  if (ranges.length === 0) {
+    throw new Error("fixture has no extractRanges; extract mode needs them");
+  }
+  const sourcePath = path.join(fixtureDir, "source.pdf");
+
+  let total = 0;
+  const timings: { name: string; wallMs: number; pageCount: number }[] = [];
+  for (const range of ranges) {
+    const slicePath = `${outPath}.${range.name}.pdf`;
+    const expected = range.endPage - range.startPage + 1;
+    const startedAt = Date.now();
+    if (selectedEngine === "qpdf") {
+      await execFileP("qpdf", [
+        "--empty",
+        "--pages",
+        sourcePath,
+        `${range.startPage}-${range.endPage}`,
+        "--",
+        slicePath,
+      ]);
+    } else {
+      const { extractPages } = await import("@shardpdf/core");
+      const extracted = extractPages(
+        sourcePath,
+        range.startPage,
+        range.endPage,
+        slicePath,
+      );
+      if (extracted !== expected) {
+        throw new Error(
+          `range ${range.name}: extracted ${extracted} pages, expected ${expected}`,
+        );
+      }
+    }
+    timings.push({
+      name: range.name,
+      wallMs: Date.now() - startedAt,
+      pageCount: expected,
+    });
+    total += expected;
+  }
+  lastRangeTimings = timings;
+  return total;
 }
 
 async function runQpdf(

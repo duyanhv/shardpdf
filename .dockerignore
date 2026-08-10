@@ -3,3 +3,6 @@
 **/.turbo
 benchmarks/out
 benchmarks/results
+target
+crates/core/fuzz/corpus
+crates/core/fuzz/artifacts

@@ -1,0 +1,122 @@
+{
+  "engine": "qpdf",
+  "mode": "extract",
+  "fixture": "production-floor",
+  "scale": null,
+  "iterations": 3,
+  "median": {
+    "peakProcessTreeRssBytes": 253853696,
+    "wallTimeMs": 1226,
+    "outputBytes": 95976271
+  },
+  "samples": [
+    {
+      "iteration": 1,
+      "engine": "qpdf",
+      "mode": "extract",
+      "fixture": "production-floor",
+      "scale": null,
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 253853696,
+      "wallTimeMs": 1226,
+      "outputBytes": 95976271,
+      "pageCountReported": 6063,
+      "pageCountActual": 6063,
+      "qpdfCheck": "pass",
+      "linkCheck": "skipped",
+      "outlineCheck": "skipped",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "bun-local",
+        "node": "v24.3.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 12.3.2",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-10T01:57:48.174Z",
+      "notes": [
+        "range unit: 389ms (2p)",
+        "range block: 188ms (60p)",
+        "range section-span: 646ms (6001p)"
+      ]
+    },
+    {
+      "iteration": 2,
+      "engine": "qpdf",
+      "mode": "extract",
+      "fixture": "production-floor",
+      "scale": null,
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 253575168,
+      "wallTimeMs": 964,
+      "outputBytes": 95976271,
+      "pageCountReported": 6063,
+      "pageCountActual": 6063,
+      "qpdfCheck": "pass",
+      "linkCheck": "skipped",
+      "outlineCheck": "skipped",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "bun-local",
+        "node": "v24.3.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 12.3.2",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-10T01:57:52.059Z",
+      "notes": [
+        "range unit: 187ms (2p)",
+        "range block: 189ms (60p)",
+        "range section-span: 585ms (6001p)"
+      ]
+    },
+    {
+      "iteration": 3,
+      "engine": "qpdf",
+      "mode": "extract",
+      "fixture": "production-floor",
+      "scale": null,
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 255246336,
+      "wallTimeMs": 1507,
+      "outputBytes": 95976271,
+      "pageCountReported": 6063,
+      "pageCountActual": 6063,
+      "qpdfCheck": "pass",
+      "linkCheck": "skipped",
+      "outlineCheck": "skipped",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "bun-local",
+        "node": "v24.3.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 12.3.2",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-10T01:57:56.954Z",
+      "notes": [
+        "range unit: 201ms (2p)",
+        "range block: 263ms (60p)",
+        "range section-span: 1039ms (6001p)"
+      ]
+    }
+  ]
+}
