@@ -1,0 +1,122 @@
+{
+  "engine": "shardpdf",
+  "mode": "extract",
+  "fixture": "production-floor",
+  "scale": null,
+  "iterations": 3,
+  "median": {
+    "peakProcessTreeRssBytes": 520781824,
+    "wallTimeMs": 1257,
+    "outputBytes": 94588377
+  },
+  "samples": [
+    {
+      "iteration": 1,
+      "engine": "shardpdf",
+      "mode": "extract",
+      "fixture": "production-floor",
+      "scale": null,
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 520781824,
+      "wallTimeMs": 2076,
+      "outputBytes": 94588377,
+      "pageCountReported": 6063,
+      "pageCountActual": 6063,
+      "qpdfCheck": "pass",
+      "linkCheck": "skipped",
+      "outlineCheck": "skipped",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "docker-768m",
+        "node": "v24.19.0",
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 11.3.0",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-10T01:55:21.476Z",
+      "notes": [
+        "range unit: 567ms (2p)",
+        "range block: 381ms (60p)",
+        "range section-span: 1096ms (6001p)"
+      ]
+    },
+    {
+      "iteration": 2,
+      "engine": "shardpdf",
+      "mode": "extract",
+      "fixture": "production-floor",
+      "scale": null,
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 595136512,
+      "wallTimeMs": 1257,
+      "outputBytes": 94588377,
+      "pageCountReported": 6063,
+      "pageCountActual": 6063,
+      "qpdfCheck": "pass",
+      "linkCheck": "skipped",
+      "outlineCheck": "skipped",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "docker-768m",
+        "node": "v24.19.0",
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 11.3.0",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-10T01:55:35.370Z",
+      "notes": [
+        "range unit: 276ms (2p)",
+        "range block: 268ms (60p)",
+        "range section-span: 689ms (6001p)"
+      ]
+    },
+    {
+      "iteration": 3,
+      "engine": "shardpdf",
+      "mode": "extract",
+      "fixture": "production-floor",
+      "scale": null,
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 518799360,
+      "wallTimeMs": 880,
+      "outputBytes": 94588377,
+      "pageCountReported": 6063,
+      "pageCountActual": 6063,
+      "qpdfCheck": "pass",
+      "linkCheck": "skipped",
+      "outlineCheck": "skipped",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "docker-768m",
+        "node": "v24.19.0",
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 11.3.0",
+        "shardpdf": "0.1.0"
+      },
+      "timestamp": "2026-08-10T01:55:50.883Z",
+      "notes": [
+        "range unit: 215ms (2p)",
+        "range block: 146ms (60p)",
+        "range section-span: 507ms (6001p)"
+      ]
+    }
+  ]
+}

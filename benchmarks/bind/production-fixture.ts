@@ -9,7 +9,7 @@ import PDFDocument from "pdfkit";
 import { BIND_MANIFEST_FILE } from "./fixture.ts";
 import type { BindFixtureManifest, BindOutlineEntry } from "./types.ts";
 
-type ProductionProfile = "smoke" | "full";
+type ProductionProfile = "smoke" | "full" | "floor";
 
 interface ProductionFixtureSize {
   shards: number;
@@ -25,6 +25,10 @@ interface FontSource {
 const PROFILES: Record<ProductionProfile, ProductionFixtureSize> = {
   smoke: { shards: 3, pagesPerShard: 12, unitAnchorEveryPages: 4 },
   full: { shards: 32, pagesPerShard: 80, unitAnchorEveryPages: 8 },
+  // Floor Inspector's production shape: ~100-page render windows (60-unit /
+  // 8-block chunks) accumulating to a ~9,000-page project-wide report, with
+  // unit anchors every ~2 pages. Their export child runs under a 768 MB cap.
+  floor: { shards: 90, pagesPerShard: 100, unitAnchorEveryPages: 2 },
 };
 
 const PAGE = { width: 595.28, height: 841.89 } as const;
@@ -37,8 +41,12 @@ const { values } = parseArgs({
   },
 });
 
-if (values.profile !== "smoke" && values.profile !== "full") {
-  console.error("--profile must be smoke or full");
+if (
+  values.profile !== "smoke" &&
+  values.profile !== "full" &&
+  values.profile !== "floor"
+) {
+  console.error("--profile must be smoke, full, or floor");
   process.exit(2);
 }
 
@@ -100,10 +108,36 @@ export async function generateProductionFixture(
     totalPages,
     shards,
     outline,
+    extractRanges: buildExtractRanges(totalPages),
   };
   const manifestPath = path.join(outputDir, BIND_MANIFEST_FILE);
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   return manifestPath;
+}
+
+/**
+ * Selective-download slices scaled to the document: one unit (2 pages), one
+ * block section (~60 pages), and one section-sized span (the back two thirds)
+ * — the three request shapes a Floor-style backend serves from a cached full
+ * report.
+ */
+function buildExtractRanges(
+  totalPages: number,
+): NonNullable<BindFixtureManifest["extractRanges"]> {
+  const clamp = (page: number): number =>
+    Math.min(Math.max(page, 1), totalPages);
+  const unitStart = clamp(Math.floor(totalPages / 2));
+  const blockStart = clamp(Math.floor(totalPages / 5));
+  const spanStart = clamp(Math.floor(totalPages / 3));
+  return [
+    { name: "unit", startPage: unitStart, endPage: clamp(unitStart + 1) },
+    {
+      name: "block",
+      startPage: blockStart,
+      endPage: clamp(blockStart + 59),
+    },
+    { name: "section-span", startPage: spanStart, endPage: totalPages },
+  ];
 }
 
 async function renderProductionShard(args: {

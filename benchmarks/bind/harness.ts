@@ -22,7 +22,7 @@ import type {
 const execFileP = promisify(execFile);
 const BENCH_DIR = path.resolve(import.meta.dirname, "..");
 const ENGINES: BindEngine[] = ["qpdf", "shardpdf"];
-const MODES: BindMode[] = ["merge", "outline"];
+const MODES: BindMode[] = ["merge", "outline", "extract"];
 
 type Check = "pass" | "fail" | "skipped";
 type Outcome = "ok" | "crash" | "wrong-output";
@@ -125,6 +125,9 @@ const fixture = await readAndValidateFixture(manifestPath);
 console.log(
   `Using fixture ${fixture.name}: ${fixture.shards.length} shard(s), ${fixture.totalPages} pages, ${fixture.outline.length} outlines.`,
 );
+if (modes.includes("extract")) {
+  await ensureExtractSource(fixture, manifestPath);
+}
 
 try {
   for (const mode of modes) {
@@ -159,6 +162,44 @@ async function prepareGeneratedFixture(
 ): Promise<string> {
   console.log(`Preparing shared ${scale} bind fixture (not measured)...`);
   return prepareBindFixture(scale, fixtureDir);
+}
+
+/**
+ * Extract mode slices a pre-bound source.pdf beside the manifest. It is
+ * produced with qpdf (unmeasured): the incumbent's output mirrors the cached
+ * full report a Floor-style backend slices in production, and doubles as a
+ * not-produced-by-us input for the extraction engine.
+ */
+async function ensureExtractSource(
+  fixture: BindFixtureManifest,
+  manifestPath: string,
+): Promise<void> {
+  if ((fixture.extractRanges ?? []).length === 0) {
+    throw new Error(
+      `fixture ${fixture.name} has no extractRanges; extract mode needs them`,
+    );
+  }
+  const fixtureDir = path.dirname(manifestPath);
+  const sourcePath = path.join(fixtureDir, "source.pdf");
+  try {
+    const { stdout } = await execFileP("qpdf", ["--show-npages", sourcePath]);
+    if (Number.parseInt(stdout.trim(), 10) === fixture.totalPages) return;
+  } catch {
+    // absent or unreadable — rebuild below
+  }
+  console.log(
+    `Preparing extract source.pdf (${fixture.totalPages} pages, not measured)...`,
+  );
+  const shardPaths = fixture.shards.map((shard) =>
+    path.join(fixtureDir, shard),
+  );
+  await execFileP("qpdf", [
+    "--empty",
+    "--pages",
+    ...shardPaths,
+    "--",
+    sourcePath,
+  ]);
 }
 
 async function readAndValidateFixture(
@@ -210,6 +251,21 @@ async function readAndValidateFixture(
     throw new Error(
       `fixture page mismatch: manifest=${fixture.totalPages} shards=${actualPages}`,
     );
+  }
+
+  for (const [index, range] of (fixture.extractRanges ?? []).entries()) {
+    if (
+      !/^[a-z0-9][a-z0-9._-]*$/.test(range.name) ||
+      !Number.isInteger(range.startPage) ||
+      !Number.isInteger(range.endPage) ||
+      range.startPage < 1 ||
+      range.startPage > range.endPage ||
+      range.endPage > fixture.totalPages
+    ) {
+      throw new Error(
+        `fixture extract range ${index} is invalid: ${JSON.stringify(range)}`,
+      );
+    }
   }
 
   let previousLevel = 0;
@@ -335,7 +391,62 @@ async function runOne(
   let linkCheck: Check = "skipped";
   let outlineCheck: Check = "skipped";
 
-  if (outcome === "ok") {
+  if (outcome === "ok" && mode === "extract") {
+    const ranges = fixture.extractRanges ?? [];
+    const expectedTotal = ranges.reduce(
+      (sum, range) => sum + (range.endPage - range.startPage + 1),
+      0,
+    );
+    if (reportLine?.startsWith("{")) {
+      try {
+        const report = JSON.parse(reportLine) as BindRunnerReport;
+        for (const timing of report.ranges ?? []) {
+          notes.push(
+            `range ${timing.name}: ${timing.wallMs}ms (${timing.pageCount}p)`,
+          );
+        }
+      } catch {
+        // already noted above
+      }
+    }
+    outputBytes = 0;
+    pageCountActual = 0;
+    qpdfCheck = "pass";
+    for (const range of ranges) {
+      const slicePath = `${outputPath}.${range.name}.pdf`;
+      const expected = range.endPage - range.startPage + 1;
+      try {
+        outputBytes += (await stat(slicePath)).size;
+        await execFileP("qpdf", ["--check", slicePath]);
+        const { stdout: pages } = await execFileP("qpdf", [
+          "--show-npages",
+          slicePath,
+        ]);
+        const actual = Number.parseInt(pages.trim(), 10);
+        pageCountActual += actual;
+        if (actual !== expected) {
+          qpdfCheck = "fail";
+          notes.push(
+            `slice ${range.name}: ${actual} pages, expected ${expected}`,
+          );
+        }
+      } catch (error) {
+        qpdfCheck = "fail";
+        notes.push(
+          `slice ${range.name} failed validation: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`,
+        );
+      }
+      if (!keepOutput) await rm(slicePath, { force: true });
+    }
+    if (qpdfCheck === "fail" || pageCountReported !== expectedTotal) {
+      outcome = "wrong-output";
+      if (pageCountReported !== expectedTotal) {
+        notes.push(
+          `page mismatch: expected=${expectedTotal} reported=${pageCountReported}`,
+        );
+      }
+    }
+  } else if (outcome === "ok") {
     outputBytes = (await stat(outputPath)).size;
     try {
       await execFileP("qpdf", ["--check", outputPath]);
