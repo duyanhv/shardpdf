@@ -44,9 +44,14 @@ renumbering. Numbers are already unique, so this cannot collide.
 
 lopdf unpacks `/Type /ObjStm` containers and `/Type /XRef` streams but leaves
 the containers in `Document.objects`. The assembler copied them verbatim, so
-for any modern producer (pdfkit with `compress`, qpdf `--object-streams=generate`,
-most PDF/A tools) every packed object appeared twice: once unpacked, once as
-dead bytes inside an orphan blob. A stray xref stream was also emitted as a
+for any producer that packs objects (qpdf `--object-streams=generate`, pdf-lib
+with `useObjectStreams`, most PDF/A and Acrobat output) every packed object
+appeared twice: once unpacked, once as dead bytes inside an orphan blob.
+
+Scope correction after measurement: pdfkit 0.19 (this project's primary
+renderer) does **not** emit object streams (0 `ObjStm` in a 200-page shard),
+so the Floor Inspector pipeline was not hit by this. It matters for shards
+from other tools and for `extractPages` on third-party PDFs. A stray xref stream was also emitted as a
 regular object. Output still parsed, but was up to 2x larger than necessary
 and contained a structure readers are not supposed to find mid-file.
 
@@ -266,7 +271,7 @@ compiled against each.
 | --- | --- | --- | --- |
 | 1.1 generation mismatch | seed shard, one stream at gen 3 | `qpdf --check`: **file is damaged, expected n n obj** | clean |
 | 1.2 ObjStm orphans | seed shard re-saved with object streams | 2,210 B, 1 ObjStm in output, qpdf clean | 1,336 B (−40%), 0 ObjStm, qpdf clean |
-| 2.1 panic safety | temporary `#[napi(catch_unwind)] fn` that panics | not testable on old (no binding) | JS `Error` thrown, process exits 0 |
+| 2.1 panic safety | temporary panicking free fn, method, and constructor | not testable on old (no binding) | all three: JS `Error` thrown, process exits 0, `Assembly` still usable after a method panic; identical under Bun |
 | 4.1 fixed partial path | two `Assembly` writers on one `<out>.partial` (what two overlapping old `generate()` runs did) | `qpdf --check`: **damaged, expected n n obj** | two overlapping `assemble()` calls to one `outputPath`: clean, 0 leftover partials |
 | 4.2 outline validated late | unknown anchor with `onProgress` | **1** render event before failure | 0 |
 | 4.4 listener leak | 5 `generate()` calls, one signal | **5** abort listeners remain | 0 |
@@ -295,6 +300,9 @@ Node 24.15 and Bun 1.3.14, observed identical results:
 | `extractPages()` output | `qpdf --check` clean |
 | `AdapterRef.version` | bumping re-rendered 3/3 cached shards (orchestrator suite) |
 | `WorkerPool.dispose()` | listener count unchanged after `generate()` (orchestrator suite) |
+| `ShardPdfErrorCode`, `ShardPdfError`, `AssembleShardInfo` types | consumer `tsc --strict` compiles an exhaustive switch over the code union; `@ts-expect-error` on a bad code and a non-function `onShard` both honored |
+| pdfkit 0.19 shard through `assemble()` | 94,938 B in, 97,680 B out, qpdf clean (pdfkit emits no ObjStm; fix 1.2 is a no-op for it) |
+| qpdf-packed shard through `assemble()` | 39,794 B in (5 ObjStm), 97,421 B out (0 ObjStm), qpdf clean |
 
 ### 7.3 Suite results
 
