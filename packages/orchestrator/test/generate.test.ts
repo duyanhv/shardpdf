@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { getEventListeners } from "node:events";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -139,13 +140,20 @@ test("anchor-referenced outlines land in the document", async (t) => {
 });
 
 test("an outline referencing an unknown anchor fails loudly", async () => {
+  const events: ProgressEvent[] = [];
   await assert.rejects(
     generate(testPlan(), {
       outputPath: path.join(workDir, "bad-outline.pdf"),
       maxPagesPerShard: 4,
       outline: [{ title: "ghost", anchor: "sec:nope" }],
+      onProgress: (e) => events.push(e),
     }),
     /unknown anchor "sec:nope"/,
+  );
+  assert.equal(
+    events.filter((e) => e.phase === "render").length,
+    0,
+    "outline is validated before the render pass starts",
   );
 });
 
@@ -182,6 +190,18 @@ test("a crashed run resumes from the shard cache", async () => {
   assert.equal(second.cachedShards, 3);
   assert.equal(second.totalPages, 10);
   assert.ok((await stat(outputPath)).size > 0);
+
+  // Bumping the adapter version must invalidate every cached shard, even
+  // though section data and module path are unchanged.
+  const bumped = testPlan();
+  bumped.adapter = { ...bumped.adapter, version: "2" };
+  const third = await generate(bumped, {
+    outputPath,
+    cacheDir,
+    maxPagesPerShard: 4,
+    keepCache: true,
+  });
+  assert.equal(third.renderedShards, 3, "adapter version is part of the key");
 });
 
 test("a non-deterministic adapter fails loudly and ships nothing", async () => {
@@ -221,5 +241,20 @@ test("an aborted signal stops the run", async () => {
       signal: controller.signal,
     }),
     (err: Error) => err.name === "AbortError",
+  );
+});
+
+test("generate detaches from a long-lived signal when it finishes", async () => {
+  const controller = new AbortController();
+  const before = getEventListeners(controller.signal, "abort").length;
+  await generate(testPlan(), {
+    outputPath: path.join(workDir, "listeners.pdf"),
+    maxPagesPerShard: 4,
+    signal: controller.signal,
+  });
+  assert.equal(
+    getEventListeners(controller.signal, "abort").length,
+    before,
+    "no abort listener leaked onto the caller's signal",
   );
 });
