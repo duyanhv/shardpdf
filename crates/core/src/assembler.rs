@@ -366,7 +366,7 @@ fn extract_named_dests(shard: &Document) -> Result<Vec<(Vec<u8>, Object)>> {
     if let Ok(names_obj) = catalog.get(b"Names") {
         let names_dict = resolve_dict(shard, names_obj)?;
         if let Ok(dests_obj) = names_dict.get(b"Dests") {
-            walk_name_tree(shard, dests_obj, &mut out)?;
+            walk_name_tree(shard, dests_obj, &mut out, &mut BTreeSet::new())?;
         }
     }
     if let Ok(dests_obj) = catalog.get(b"Dests") {
@@ -382,11 +382,20 @@ fn walk_name_tree(
     doc: &Document,
     node_obj: &Object,
     out: &mut Vec<(Vec<u8>, Object)>,
+    visited: &mut BTreeSet<ObjectId>,
 ) -> Result<()> {
+    if let Object::Reference(id) = node_obj {
+        if !visited.insert(*id) {
+            return Err(AssemblyError::Malformed(format!(
+                "cycle in /Names/Dests tree at {} {} R",
+                id.0, id.1
+            )));
+        }
+    }
     let node = resolve_dict(doc, node_obj)?;
     if let Ok(kids_obj) = node.get(b"Kids") {
         for kid in resolve(doc, kids_obj)?.as_array()? {
-            walk_name_tree(doc, kid, out)?;
+            walk_name_tree(doc, kid, out, visited)?;
         }
     }
     if let Ok(names_obj) = node.get(b"Names") {
@@ -555,7 +564,13 @@ mod tests {
         let mut found = Vec::new();
         let names_obj = catalog.get(b"Names").expect("catalog lost /Names");
         let names_dict = resolve_dict(&merged, names_obj).unwrap();
-        walk_name_tree(&merged, names_dict.get(b"Dests").unwrap(), &mut found).unwrap();
+        walk_name_tree(
+            &merged,
+            names_dict.get(b"Dests").unwrap(),
+            &mut found,
+            &mut BTreeSet::new(),
+        )
+        .unwrap();
 
         let names: Vec<String> = found
             .iter()
@@ -686,6 +701,38 @@ mod tests {
         assert!(matches!(
             result,
             Err(AssemblyError::Malformed(message)) if message.contains("cycle in /Parent chain")
+        ));
+    }
+
+    /// A /Names/Dests node whose /Kids points back at itself must be
+    /// rejected, not recursed into until the stack overflows.
+    #[test]
+    fn cyclic_name_tree_is_rejected() {
+        let out = std::env::temp_dir().join("shardpdf-core-test-names-cycle.pdf");
+        let mut doc = make_shard(1, "ncycle");
+        let node_id = doc.new_object_id();
+        doc.objects.insert(
+            node_id,
+            Object::Dictionary(dictionary! {
+                "Kids" => vec![Object::Reference(node_id)],
+            }),
+        );
+        let catalog_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        doc.get_object_mut(catalog_id)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set(
+                "Names",
+                dictionary! { "Dests" => Object::Reference(node_id) },
+            );
+
+        let mut assembly = Assembly::new(&out).unwrap();
+        let result = assembly.append_shard_doc(doc);
+        std::fs::remove_file(&out).ok();
+        assert!(matches!(
+            result,
+            Err(AssemblyError::Malformed(message)) if message.contains("cycle in /Names/Dests")
         ));
     }
 
