@@ -304,7 +304,27 @@ Node 24.15 and Bun 1.3.14, observed identical results:
 | pdfkit 0.19 shard through `assemble()` | 94,938 B in, 97,680 B out, qpdf clean (pdfkit emits no ObjStm; fix 1.2 is a no-op for it) |
 | qpdf-packed shard through `assemble()` | 39,794 B in (5 ObjStm), 97,421 B out (0 ObjStm), qpdf clean |
 
-### 7.3 Suite results
+### 7.3 Final pass over the finished tree
+
+The checks in 7.1 and 7.2 were developed incrementally while fixes landed.
+After the last commit, the whole set was rerun once from a clean state
+(`cargo clean -p shardpdf-core`, native binding deleted and rebuilt) against
+HEAD `23457e0`:
+
+| Check | Reported |
+| --- | --- |
+| `bun install --frozen-lockfile`, `bun run lint`, `bun run typecheck` | no changes, 44 files clean, 3/3 tasks |
+| `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings` | clean |
+| `cargo test --workspace`; `--no-default-features` | 27 pass; 27 pass |
+| Native rebuild, core JS suite | Node 24.15: 9/9; Bun 1.3.14: 9/9 |
+| Orchestrator suite, qpdf 12.4.1 present | 19 pass, 1 skip (soak gate), link-integrity and outline checks live |
+| `SOAK=1` | 1,000 pages 90 MB, 3,000 pages 93 MB, pass |
+| Public-interface probe, 13 checks (5 error codes incl. NaN and post-finalize getter, abort idempotency, `onShard` + partial cleanup, qpdf on `assemble()` with non-ASCII nested outline, qpdf on `extractPages()`, ObjStm-packed shard) | 13/13 Node, 13/13 Bun, exit 0 both |
+| Consumer `tsc --strict` on new type exports plus `AdapterRef.version` | compiles; 3 `@ts-expect-error` guards honored |
+
+Working tree clean after the pass; no probe files remain.
+
+### 7.4 Suite results
 
 
 | Check | Result |
