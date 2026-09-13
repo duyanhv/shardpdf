@@ -1,0 +1,6 @@
+# lopdf 0.44 is edition 2024 and declares rust-version = "1.88". Without this
+# pin an older default toolchain fails with an opaque "requires the Cargo
+# feature called `edition2024`" error instead of "your Rust is too old".
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
