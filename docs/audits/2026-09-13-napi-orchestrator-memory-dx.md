@@ -3,7 +3,8 @@
 **Date:** 2026-09-13
 **Scope:** `crates/core` (Rust + napi + JS wrapper), `packages/orchestrator`,
 memory model, build/test/CI ergonomics. Every finding below was reproduced
-locally before being classified. Items marked **fixed** landed in commits
+locally before being classified, and every fix was validated with qpdf 12.4.1
+as the oracle (installed for this audit; see §7). Items marked **fixed** landed in commits
 `d7fee2e`, `a990aea`, `39a19f7`, `bbfaaba`, and the name-tree commit after.
 
 ## Summary
@@ -165,8 +166,9 @@ waiter with `running` held constant.
 ### 4.6 One process per task (deferred, design)
 
 `fork()` per measure and per render is the documented isolation choice and it
-delivers the memory promise. The cost is ~100 ms of Node startup plus adapter
-module load per task. For a 30-shard document that is 60 process spawns.
+delivers the memory promise. Measured cost: 103 ms per task for fork + Node
+startup + pdfkit adapter load + a trivial measure (sequential, N=10, Apple
+Silicon). For a 30-shard document that is 60 process spawns.
 A warm pool with a max-tasks-per-worker recycle would keep isolation for
 crashes while amortizing startup; the spec's `ResourcePolicy.maxWorkerRssMb`
 would be the natural trigger. Not changed: it is a tuning decision the
@@ -252,6 +254,22 @@ per-platform `@shardpdf/core-<triple>` packages is the standard route and
 - `CARGO_INCREMENTAL=0` in CI and `lto = true` + `strip` in the release
   profile are the right defaults for a napi cdylib.
 
+## 7. Verification after the fixes
+
+| Check | Result |
+| --- | --- |
+| `cargo clippy --workspace --all-targets -D warnings` | clean |
+| `cargo test -p shardpdf-core` (default and `--no-default-features`) | 27 pass |
+| Core JS suite, Node 24 and Bun 1.3.14 | 9 pass each |
+| Orchestrator suite with qpdf present (`--force` to bypass turbo cache) | 19 pass, 1 skip (soak gate) |
+| `qpdf --check` on output from an ObjStm-packed source with one object at generation 3 and an outline | "No syntax or stream encoding errors found", 0 `ObjStm` in output |
+| `SOAK=1` memory-boundedness test | 1,000 pages 90 MB, 3,000 pages 93 MB, pass |
+
+Note for local runs: turbo caches `test` task output. After installing qpdf,
+`bun run test` replayed the cached "qpdf not installed" skips until run with
+`--force`. Worth adding `qpdf --version` to the task's `inputs` or marking the
+test task `cache: false` so an oracle change is never masked.
+
 ## What was not audited
 
 - The `benchmarks/` harness and runners (measurement code, not shipped).
@@ -259,12 +277,14 @@ per-platform `@shardpdf/core-<triple>` packages is the standard route and
   `no-default-features` build.
 - Windows behavior; all measurements are macOS. The `rm`-while-open fix in
   4.1 is reasoned, not tested on Windows.
+- The bind benchmark (`benchmarks/bind`) was not rerun; output size for
+  ObjStm-packed shards should now be smaller, which would only improve the
+  recorded numbers.
 
 ## Suggested next steps, in order
 
-1. Run the soak test (`SOAK=1`) and the bind benchmark once against the fixed
-   core to confirm the ObjStm fix did not change the numbers in
-   `docs/benchmarks` (it should only shrink output size).
+1. Rerun the bind benchmark once against the fixed core to refresh
+   `docs/benchmarks` (soak already reran: unchanged).
 2. Decide whether `max_decompressed_size` should be an `Assembly` constructor
    option now or wait for an untrusted-input use case.
 3. Cache-entry validation on resume (4.7) when the pipeline layer lands.
