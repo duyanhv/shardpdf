@@ -23,6 +23,12 @@ const LYING_ADAPTER_PATH = fileURLToPath(
 const workDir = await mkdtemp(path.join(tmpdir(), "shardpdf-orch-test-"));
 after(() => rm(workDir, { recursive: true, force: true }));
 
+if (!(await qpdfAvailable())) {
+  console.warn(
+    "warning: qpdf not found; PDF validity and link-integrity checks are skipped in this run",
+  );
+}
+
 /** 3 body sections + a TOC that references all of them; page estimates force
  * multiple shards, so the TOC's links are genuinely cross-shard. */
 function testPlan(): DocumentPlan<TestSection> {

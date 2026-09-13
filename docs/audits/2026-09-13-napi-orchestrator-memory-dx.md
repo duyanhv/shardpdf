@@ -24,7 +24,7 @@ that duplicated (and subtly diverged from) the core's assembly path.
 | JS wrapper | 2 | 2 | 0 |
 | Orchestrator | 6 | 5 | 1 |
 | Memory | 0 bugs, 2 clarifications | n/a | 2 |
-| Developer UX | 4 | 3 | 1 |
+| Developer UX | 4 | 4 | 0 |
 
 ## 1. Rust core
 
@@ -229,13 +229,13 @@ toolchain, `cargo test` fails with "requires the Cargo feature called
 The repo had per-package READMEs and a spec but nothing at the root telling a
 new contributor what to install and run. Added.
 
-### 6.3 Test oracle is optional and silent (observation)
+### 6.3 Test oracle was optional and silent (fixed)
 
-Both test suites skip qpdf validation when it is not installed. Locally that
-means the "output is a valid PDF" assertion is not exercised unless the
-developer has qpdf. CI installs it, so the gate holds there. Consider
-printing a one-line warning at suite start when qpdf is absent so a green
-local run is not mistaken for a validated one.
+Both test suites skip qpdf validation when it is not installed, so a green
+local run was not necessarily a validated one. Worse, turbo cached the `test`
+task, so after installing qpdf `bun run test` kept replaying the cached
+"skipped" result. Both suites now print a one-line warning at start when
+qpdf is absent, and the turbo `test` task is `cache: false`.
 
 ### 6.4 Publish path does not exist yet (deferred)
 
@@ -265,10 +265,8 @@ per-platform `@shardpdf/core-<triple>` packages is the standard route and
 | `qpdf --check` on output from an ObjStm-packed source with one object at generation 3 and an outline | "No syntax or stream encoding errors found", 0 `ObjStm` in output |
 | `SOAK=1` memory-boundedness test | 1,000 pages 90 MB, 3,000 pages 93 MB, pass |
 
-Note for local runs: turbo caches `test` task output. After installing qpdf,
-`bun run test` replayed the cached "qpdf not installed" skips until run with
-`--force`. Worth adding `qpdf --version` to the task's `inputs` or marking the
-test task `cache: false` so an oracle change is never masked.
+Turbo previously cached the `test` task and replayed "qpdf not installed"
+skips after qpdf was installed; that is fixed (§6.3).
 
 ## What was not audited
 

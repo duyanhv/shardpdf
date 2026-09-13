@@ -29,6 +29,11 @@ let workDir = "";
 let plainShardPath = "";
 
 before(async () => {
+  if (!(await qpdfAvailable())) {
+    console.warn(
+      "warning: qpdf not found; PDF validity checks are skipped in this run",
+    );
+  }
   workDir = await mkdtemp(path.join(tmpdir(), "shardpdf-core-api-"));
   plainShardPath = path.join(workDir, "plain-shard.pdf");
   await writePlainPdf(plainShardPath);
