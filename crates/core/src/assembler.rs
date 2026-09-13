@@ -129,7 +129,16 @@ impl Assembly {
     /// consumed; nothing of it stays in memory beyond page ids, destination
     /// names, and byte offsets.
     pub fn append_shard_doc(&mut self, mut shard: Document) -> Result<u32> {
+        // lopdf keeps the source's object-stream containers and xref streams
+        // in `objects` (it has already unpacked their contents). Copying them
+        // would duplicate every packed object as an orphan blob and drop a
+        // stray /Type /XRef stream into the output. Drop them before
+        // renumbering so the id space stays dense.
+        shard
+            .objects
+            .retain(|_, object| !is_structural_only(object));
         shard.renumber_objects_with(self.next_object);
+        normalize_generations(&mut shard);
 
         let pages: Vec<ObjectId> = shard.get_pages().into_values().collect();
         if pages.is_empty() {
@@ -145,6 +154,7 @@ impl Assembly {
         }
 
         for (&id, object) in &shard.objects {
+            debug_assert_eq!(id.1, 0, "generations are normalized before writing");
             self.offsets.insert(id.0, self.writer.position);
             write_indirect_object(&mut self.writer, id, object)?;
         }
@@ -251,6 +261,39 @@ impl Assembly {
 
 fn trailer_root(doc: &Document) -> Result<ObjectId> {
     Ok(doc.trailer.get(b"Root")?.as_reference()?)
+}
+
+/// Objects that only describe the *source file's* layout and must never be
+/// carried into a re-serialized document: object-stream containers, xref
+/// streams, and the linearization dictionary.
+fn is_structural_only(object: &Object) -> bool {
+    match object {
+        Object::Stream(stream) => stream.dict.has_type(b"ObjStm") || stream.dict.has_type(b"XRef"),
+        Object::Dictionary(dict) => dict.has(b"Linearized"),
+        _ => false,
+    }
+}
+
+/// Rewrites every object id and reference to generation 0. Renumbering keeps
+/// the source generation (`5 2 obj` after an incremental update), but the
+/// xref table this assembler writes is a fresh, single-section table, so a
+/// non-zero generation there would contradict the object header and produce
+/// a document strict readers reject. Numbers are already unique after
+/// renumbering, so collapsing generations cannot collide.
+fn normalize_generations(shard: &mut Document) {
+    if shard.objects.keys().all(|id| id.1 == 0) {
+        return;
+    }
+    let objects = std::mem::take(&mut shard.objects);
+    shard.objects = objects
+        .into_iter()
+        .map(|((number, _), object)| ((number, 0), object))
+        .collect();
+    shard.traverse_objects(|object| {
+        if let Object::Reference((_, generation)) = object {
+            *generation = 0;
+        }
+    });
 }
 
 /// Follows references (bounded, cycles are malformed input) to a concrete object.
@@ -727,5 +770,75 @@ mod tests {
         let merged = assemble(vec![doc], "indirect-length");
         let pages: Vec<ObjectId> = merged.get_pages().into_values().collect();
         assert!(page_text(&merged, pages[0]).contains("len-p0"));
+    }
+
+    /// A shard that went through incremental updates carries objects with a
+    /// non-zero generation. The output xref is a fresh table, so every entry
+    /// must be generation 0 and every header/reference must agree with it.
+    #[test]
+    fn non_zero_generations_are_normalized() {
+        let mut doc = make_shard(1, "gen");
+        let stream_id = doc
+            .objects
+            .iter()
+            .find(|(_, o)| matches!(o, Object::Stream(_)))
+            .map(|(&id, _)| id)
+            .unwrap();
+        let stream = doc.objects.remove(&stream_id).unwrap();
+        let bumped = (stream_id.0, 2);
+        doc.objects.insert(bumped, stream);
+        doc.traverse_objects(|object| {
+            if let Object::Reference(id) = object {
+                if *id == stream_id {
+                    *id = bumped;
+                }
+            }
+        });
+
+        let out = std::env::temp_dir().join("shardpdf-core-test-generation.pdf");
+        assemble_to(vec![doc], &out);
+        let bytes = std::fs::read(&out).unwrap();
+        std::fs::remove_file(&out).ok();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains(" 2 obj"), "object header kept generation 2");
+        assert!(!text.contains(" 2 R"), "reference kept generation 2");
+
+        let merged = Document::load_mem(&bytes).unwrap();
+        let pages: Vec<ObjectId> = merged.get_pages().into_values().collect();
+        assert!(page_text(&merged, pages[0]).contains("gen-p0"));
+    }
+
+    /// Modern producers pack objects into /ObjStm containers and use xref
+    /// streams. lopdf unpacks them but keeps the containers in `objects`;
+    /// they must not be copied into the output as orphan blobs.
+    #[test]
+    fn object_stream_containers_are_not_copied() {
+        let mut bytes = Vec::new();
+        make_shard(2, "objstm").save_modern(&mut bytes).unwrap();
+        let source = String::from_utf8_lossy(&bytes);
+        assert!(
+            source.contains("/ObjStm"),
+            "fixture must use object streams"
+        );
+
+        let shard = Document::load_mem(&bytes).unwrap();
+        let out = std::env::temp_dir().join("shardpdf-core-test-objstm.pdf");
+        assemble_to(vec![shard], &out);
+        let output = std::fs::read(&out).unwrap();
+        std::fs::remove_file(&out).ok();
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            !text.contains("/ObjStm"),
+            "ObjStm container leaked into output"
+        );
+        assert!(
+            !text.contains("/Type /XRef"),
+            "xref stream leaked into output"
+        );
+
+        let merged = Document::load_mem(&output).unwrap();
+        let pages: Vec<ObjectId> = merged.get_pages().into_values().collect();
+        assert_eq!(pages.len(), 2);
+        assert!(page_text(&merged, pages[1]).contains("objstm-p1"));
     }
 }
