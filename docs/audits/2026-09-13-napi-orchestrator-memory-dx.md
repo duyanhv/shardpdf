@@ -256,6 +256,49 @@ per-platform `@shardpdf/core-<triple>` packages is the standard route and
 
 ## 7. Verification after the fixes
 
+### 7.1 Before/after on identical inputs
+
+Pre-audit commit `eb73c08` was built in a separate worktree and driven with
+the same inputs as the fixed core. "Old" and "new" are the same probe code
+compiled against each.
+
+| Finding | Input | Old (`eb73c08`) | New (`4f43ee1`+) |
+| --- | --- | --- | --- |
+| 1.1 generation mismatch | seed shard, one stream at gen 3 | `qpdf --check`: **file is damaged, expected n n obj** | clean |
+| 1.2 ObjStm orphans | seed shard re-saved with object streams | 2,210 B, 1 ObjStm in output, qpdf clean | 1,336 B (−40%), 0 ObjStm, qpdf clean |
+| 2.1 panic safety | temporary `#[napi(catch_unwind)] fn` that panics | not testable on old (no binding) | JS `Error` thrown, process exits 0 |
+| 4.1 fixed partial path | two `Assembly` writers on one `<out>.partial` (what two overlapping old `generate()` runs did) | `qpdf --check`: **damaged, expected n n obj** | two overlapping `assemble()` calls to one `outputPath`: clean, 0 leftover partials |
+| 4.2 outline validated late | unknown anchor with `onProgress` | **1** render event before failure | 0 |
+| 4.4 listener leak | 5 `generate()` calls, one signal | **5** abort listeners remain | 0 |
+
+Note on 4.1: three trials of two real overlapping `generate()` calls on the
+old code all produced a valid file. The race is real (demonstrated directly
+on the shared partial path) but the window in practice requires the second
+run to open the partial while the first is mid-append; with small test
+shards the runs serialize on the worker pool and rarely overlap there.
+
+### 7.2 Changed public outputs, exercised through the real entrypoint
+
+A probe requiring `@shardpdf/core` from a consumer package, run under both
+Node 24.15 and Bun 1.3.14, observed identical results:
+
+| Public output | Observed |
+| --- | --- |
+| `error.code` = `SHARDPDF_PDF_PARSE` | thrown for missing input file |
+| `error.code` = `SHARDPDF_MALFORMED` | thrown for inverted page range |
+| `error.code` = `SHARDPDF_INVALID_ARG` | thrown for `1.5` and for `-1` |
+| `error.code` = `SHARDPDF_CONSUMED` | thrown for `appendShard` after `abort` |
+| `error.code` = `SHARDPDF_IO` | thrown for unwritable output directory |
+| `Assembly.abort()` idempotent, `Assembly.consumed` | `false -> true`, second `abort()` no throw |
+| `assemble({ onShard })` | fired `0:2/2`, `1:2/4` before duplicate-dest rejection; partial removed |
+| `assemble()` output with nested outline | `qpdf --check` clean, 2 pages |
+| `extractPages()` output | `qpdf --check` clean |
+| `AdapterRef.version` | bumping re-rendered 3/3 cached shards (orchestrator suite) |
+| `WorkerPool.dispose()` | listener count unchanged after `generate()` (orchestrator suite) |
+
+### 7.3 Suite results
+
+
 | Check | Result |
 | --- | --- |
 | `cargo clippy --workspace --all-targets -D warnings` | clean |
