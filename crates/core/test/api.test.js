@@ -66,10 +66,41 @@ test("assemble cleans partial output after a shard error", async () => {
 
   await assert.rejects(
     assemble({ shards: [seedPath, invalidPath], outputPath }),
-    /pdf error/i,
+    { code: "SHARDPDF_PDF_PARSE" },
   );
   await assert.rejects(stat(outputPath), { code: "ENOENT" });
   assert.deepEqual(await partialsFor(outputPath), []);
+});
+
+test("assemble reports each shard through onShard and aborts if it throws", async () => {
+  const outputPath = path.join(workDir, "onshard.pdf");
+  /** @type {{index: number, pageCount: number, totalPages: number}[]} */
+  const seen = [];
+  const result = await assemble({
+    shards: [seedPath, plainShardPath],
+    outputPath,
+    onShard: ({ index, pageCount, totalPages }) =>
+      seen.push({ index, pageCount, totalPages }),
+  });
+  assert.deepEqual(result, { pageCount: 3 });
+  assert.deepEqual(seen, [
+    { index: 0, pageCount: 2, totalPages: 2 },
+    { index: 1, pageCount: 1, totalPages: 3 },
+  ]);
+
+  const rejectedPath = path.join(workDir, "onshard-rejected.pdf");
+  await assert.rejects(
+    assemble({
+      shards: [seedPath, plainShardPath],
+      outputPath: rejectedPath,
+      onShard: ({ index }) => {
+        if (index === 1) throw new Error("count mismatch");
+      },
+    }),
+    /count mismatch/,
+  );
+  await assert.rejects(stat(rejectedPath), { code: "ENOENT" });
+  assert.deepEqual(await partialsFor(rejectedPath), []);
 });
 
 test("assemble observes cancellation between shard appends", async () => {
@@ -130,17 +161,34 @@ test("extractPages rejects out-of-range and inverted ranges", async () => {
   ]) {
     assert.throws(
       () => extractPages(sourcePath, start, end, outputPath),
-      /malformed/i,
+      { code: "SHARDPDF_MALFORMED" },
       `range ${start}-${end} must be rejected`,
+    );
+  }
+  for (const [start, end] of [
+    [-1, 1],
+    [1.5, 2],
+    [Number.NaN, 1],
+  ]) {
+    assert.throws(
+      () => extractPages(sourcePath, start, end, outputPath),
+      { code: "SHARDPDF_INVALID_ARG" },
+      `range ${start}-${end} must be rejected before reaching the core`,
     );
   }
 });
 
-test("low-level abort consumes the assembly and closes its writer", async () => {
+test("low-level abort is idempotent and consumes the assembly", async () => {
   const partialPath = path.join(workDir, "low-level.partial");
   const assembly = new Assembly(partialPath);
+  assert.equal(assembly.consumed, false);
   assembly.abort();
-  assert.throws(() => assembly.appendShard(seedPath), /already finalized/);
+  assembly.abort(); // second call is a no-op, not an error
+  assert.equal(assembly.consumed, true);
+  assert.throws(() => assembly.appendShard(seedPath), {
+    code: "SHARDPDF_CONSUMED",
+  });
+  assert.throws(() => assembly.pageCount, { code: "SHARDPDF_CONSUMED" });
   await rm(partialPath);
 });
 

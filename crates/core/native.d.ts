@@ -2,11 +2,20 @@
 /* eslint-disable */
 export declare class Assembly {
   constructor(outputPath: string)
-  /** Appends one complete single-shard PDF; returns its page count. */
+  /**
+   * Appends one complete single-shard PDF; returns its page count.
+   * Synchronous: blocks the event loop for the duration of the parse.
+   */
   appendShard(shardPath: string): number
   /** Total pages appended so far. */
   get pageCount(): number
-  /** Closes the partial output without finalizing it. Consumed. */
+  /** Whether `finalize()` or `abort()` has already consumed this assembly. */
+  get consumed(): boolean
+  /**
+   * Closes the partial output without finalizing it. Idempotent: calling
+   * it on an already-consumed assembly is a no-op, so `finally` blocks can
+   * call it unconditionally.
+   */
   abort(): void
   /** Writes the assembled document, with optional bookmarks. Consumed. */
   finalize(outline?: Array<OutlineEntry> | undefined | null): void

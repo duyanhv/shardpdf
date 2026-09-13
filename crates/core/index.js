@@ -9,6 +9,7 @@ const nativeBinding = require("./native.js");
  * @property {string} outputPath
  * @property {{title: string, pageIndex: number, level?: number}[]} [outline]
  * @property {AbortSignal} [signal]
+ * @property {(info: {index: number, path: string, pageCount: number, totalPages: number}) => void} [onShard]
  */
 
 /**
@@ -18,6 +19,10 @@ const nativeBinding = require("./native.js");
  * append is synchronous and atomic from JavaScript's perspective, so a signal
  * cannot interrupt a shard while the native parser is processing it.
  *
+ * `onShard` fires after each successful append with that shard's page count;
+ * throwing from it aborts the assembly (used by callers that verify counts
+ * against a prior measurement).
+ *
  * @param {AssembleOptions} input
  * @returns {Promise<{pageCount: number}>}
  */
@@ -25,7 +30,7 @@ async function assemble(input) {
   if (input === null || typeof input !== "object") {
     throw new TypeError("assemble input must be an object");
   }
-  const { shards, outputPath, outline, signal } = input;
+  const { shards, outputPath, outline, signal, onShard } = input;
   if (!Array.isArray(shards) || shards.length === 0) {
     throw new RangeError("assemble requires at least one shard");
   }
@@ -38,6 +43,9 @@ async function assemble(input) {
   if (outline !== undefined && !Array.isArray(outline)) {
     throw new TypeError("outline must be an array when provided");
   }
+  if (onShard !== undefined && typeof onShard !== "function") {
+    throw new TypeError("onShard must be a function when provided");
+  }
 
   signal?.throwIfAborted();
   const partialPath = `${outputPath}.partial-${process.pid}-${randomUUID()}`;
@@ -48,7 +56,14 @@ async function assemble(input) {
     assembly = new nativeBinding.Assembly(partialPath);
     for (let index = 0; index < shards.length; index++) {
       signal?.throwIfAborted();
-      pageCount += assembly.appendShard(shards[index]);
+      const shardPages = assembly.appendShard(shards[index]);
+      pageCount += shardPages;
+      onShard?.({
+        index,
+        path: shards[index],
+        pageCount: shardPages,
+        totalPages: pageCount,
+      });
 
       // Give timers and abort handlers a chance to run between native calls.
       if (index + 1 < shards.length) await yieldToEventLoop();
@@ -67,11 +82,8 @@ async function assemble(input) {
   } finally {
     // A failed append leaves the Rust writer open. Consume it before unlinking
     // so cleanup is deterministic on Windows as well as POSIX systems.
-    try {
-      assembly?.abort();
-    } catch {
-      // Successful finalize already consumed the native assembly.
-    }
+    // abort() is idempotent, so this is safe after a successful finalize.
+    assembly?.abort();
     await rm(partialPath, { force: true });
   }
 }
