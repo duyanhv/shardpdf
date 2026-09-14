@@ -49,6 +49,28 @@ impl AsRef<str> for ErrorCode {
 
 type Result<T> = napi::Result<T, ErrorCode>;
 
+/// Build information for the loaded native module. Benchmarks record this
+/// so a debug binary can never be mistaken for a release measurement.
+#[napi(object)]
+pub struct BuildInfo {
+    /// `"release"` or `"debug"` (Cargo profile the binding was compiled with).
+    pub profile: String,
+    /// Crate version from Cargo.toml.
+    pub version: String,
+}
+
+#[napi]
+pub fn build_info() -> BuildInfo {
+    BuildInfo {
+        profile: if cfg!(debug_assertions) {
+            "debug".into()
+        } else {
+            "release".into()
+        },
+        version: env!("CARGO_PKG_VERSION").into(),
+    }
+}
+
 fn to_napi_err(e: assembler::AssemblyError) -> napi::Error<ErrorCode> {
     let code = match &e {
         assembler::AssemblyError::Pdf(_) => ErrorCode::PdfParse,

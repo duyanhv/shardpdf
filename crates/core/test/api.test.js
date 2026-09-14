@@ -12,7 +12,7 @@ const { tmpdir } = require("node:os");
 const path = require("node:path");
 const { after, before, test } = require("node:test");
 const { promisify } = require("node:util");
-const { Assembly, assemble, extractPages } = require("..");
+const { Assembly, assemble, buildInfo, extractPages } = require("..");
 
 const execFileP = promisify(execFile);
 const seedPath = path.join(
@@ -44,6 +44,13 @@ test("exposes native and high-level APIs to ESM consumers", async () => {
   const core = await import("../index.js");
   assert.equal(core.Assembly, Assembly);
   assert.equal(core.assemble, assemble);
+  assert.equal(core.buildInfo, buildInfo);
+});
+
+test("buildInfo reports the Cargo profile and crate version", () => {
+  const info = buildInfo();
+  assert.ok(["debug", "release"].includes(info.profile), info.profile);
+  assert.match(info.version, /^\d+\.\d+\.\d+/);
 });
 
 test("assemble promotes a valid multi-shard PDF", async () => {

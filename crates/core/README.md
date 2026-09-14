@@ -32,6 +32,10 @@ All native calls are synchronous and run on the JavaScript thread. Appending a
 500-page PDFKit shard blocks the event loop for roughly 50 ms in a debug build;
 `assemble()` yields between shards so timers and abort handlers stay live.
 
+`buildInfo()` returns `{ profile: "release" | "debug", version }` for the
+loaded binding. The benchmark harness refuses to record a debug build without
+`--allow-debug`; check it whenever a timing looks off.
+
 ## Errors
 
 Native errors carry a stable `code` (typed as `ShardPdfErrorCode`):

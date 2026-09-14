@@ -1,5 +1,5 @@
-export type { OutlineEntry } from "./native.js";
-export { Assembly, extractPages } from "./native.js";
+export type { BuildInfo, OutlineEntry } from "./native.js";
+export { Assembly, buildInfo, extractPages } from "./native.js";
 
 /**
  * Stable `error.code` values thrown by the native binding. Branch on these

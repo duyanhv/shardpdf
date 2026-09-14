@@ -92,4 +92,5 @@ Object.assign(module.exports, nativeBinding);
 // Keep explicit assignments so Node's CommonJS lexer exposes named ESM imports.
 module.exports.Assembly = nativeBinding.Assembly;
 module.exports.extractPages = nativeBinding.extractPages;
+module.exports.buildInfo = nativeBinding.buildInfo;
 module.exports.assemble = assemble;

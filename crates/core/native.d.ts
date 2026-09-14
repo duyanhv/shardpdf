@@ -24,6 +24,19 @@ export declare class Assembly {
   finalize(outline?: Array<OutlineEntry> | undefined | null): void
 }
 
+export declare function buildInfo(): BuildInfo
+
+/**
+ * Build information for the loaded native module. Benchmarks record this
+ * so a debug binary can never be mistaken for a release measurement.
+ */
+export interface BuildInfo {
+  /** `"release"` or `"debug"` (Cargo profile the binding was compiled with). */
+  profile: string
+  /** Crate version from Cargo.toml. */
+  version: string
+}
+
 /**
  * Extract an inclusive, 1-based page range from `inputPath` into
  * `outputPath`, copying only objects the selected pages reach. Returns the
