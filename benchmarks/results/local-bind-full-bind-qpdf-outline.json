@@ -5,8 +5,8 @@
   "scale": "full",
   "iterations": 5,
   "median": {
-    "peakProcessTreeRssBytes": 208683008,
-    "wallTimeMs": 1342,
+    "peakProcessTreeRssBytes": 206831616,
+    "wallTimeMs": 1441,
     "outputBytes": 23467646
   },
   "samples": [
@@ -17,8 +17,8 @@
       "fixture": "full",
       "scale": "full",
       "outcome": "wrong-output",
-      "peakProcessTreeRssBytes": 212844544,
-      "wallTimeMs": 1342,
+      "peakProcessTreeRssBytes": 209829888,
+      "wallTimeMs": 1441,
       "outputBytes": 23467646,
       "pageCountReported": 11164,
       "pageCountActual": 11164,
@@ -37,9 +37,11 @@
       },
       "versions": {
         "qpdf": "qpdf version 12.4.1",
-        "shardpdf": "0.1.0"
+        "shardpdf": "0.1.0",
+        "shardpdfProfile": "release",
+        "git": "dbf4c7d"
       },
-      "timestamp": "2026-09-14T14:55:21.589Z",
+      "timestamp": "2026-09-14T15:03:13.871Z",
       "notes": [
         "500/500 named link destinations are undefined"
       ]
@@ -51,8 +53,8 @@
       "fixture": "full",
       "scale": "full",
       "outcome": "wrong-output",
-      "peakProcessTreeRssBytes": 206848000,
-      "wallTimeMs": 1335,
+      "peakProcessTreeRssBytes": 202293248,
+      "wallTimeMs": 1446,
       "outputBytes": 23467646,
       "pageCountReported": 11164,
       "pageCountActual": 11164,
@@ -71,9 +73,11 @@
       },
       "versions": {
         "qpdf": "qpdf version 12.4.1",
-        "shardpdf": "0.1.0"
+        "shardpdf": "0.1.0",
+        "shardpdfProfile": "release",
+        "git": "dbf4c7d"
       },
-      "timestamp": "2026-09-14T14:55:27.088Z",
+      "timestamp": "2026-09-14T15:03:19.785Z",
       "notes": [
         "500/500 named link destinations are undefined"
       ]
@@ -85,8 +89,8 @@
       "fixture": "full",
       "scale": "full",
       "outcome": "wrong-output",
-      "peakProcessTreeRssBytes": 208683008,
-      "wallTimeMs": 1350,
+      "peakProcessTreeRssBytes": 203079680,
+      "wallTimeMs": 1449,
       "outputBytes": 23467646,
       "pageCountReported": 11164,
       "pageCountActual": 11164,
@@ -105,9 +109,11 @@
       },
       "versions": {
         "qpdf": "qpdf version 12.4.1",
-        "shardpdf": "0.1.0"
+        "shardpdf": "0.1.0",
+        "shardpdfProfile": "release",
+        "git": "dbf4c7d"
       },
-      "timestamp": "2026-09-14T14:55:32.613Z",
+      "timestamp": "2026-09-14T15:03:25.615Z",
       "notes": [
         "500/500 named link destinations are undefined"
       ]
@@ -119,8 +125,8 @@
       "fixture": "full",
       "scale": "full",
       "outcome": "wrong-output",
-      "peakProcessTreeRssBytes": 203112448,
-      "wallTimeMs": 1378,
+      "peakProcessTreeRssBytes": 208011264,
+      "wallTimeMs": 1440,
       "outputBytes": 23467646,
       "pageCountReported": 11164,
       "pageCountActual": 11164,
@@ -139,9 +145,11 @@
       },
       "versions": {
         "qpdf": "qpdf version 12.4.1",
-        "shardpdf": "0.1.0"
+        "shardpdf": "0.1.0",
+        "shardpdfProfile": "release",
+        "git": "dbf4c7d"
       },
-      "timestamp": "2026-09-14T14:55:38.084Z",
+      "timestamp": "2026-09-14T15:03:31.536Z",
       "notes": [
         "500/500 named link destinations are undefined"
       ]
@@ -153,8 +161,8 @@
       "fixture": "full",
       "scale": "full",
       "outcome": "wrong-output",
-      "peakProcessTreeRssBytes": 209420288,
-      "wallTimeMs": 1341,
+      "peakProcessTreeRssBytes": 206831616,
+      "wallTimeMs": 1439,
       "outputBytes": 23467646,
       "pageCountReported": 11164,
       "pageCountActual": 11164,
@@ -173,9 +181,11 @@
       },
       "versions": {
         "qpdf": "qpdf version 12.4.1",
-        "shardpdf": "0.1.0"
+        "shardpdf": "0.1.0",
+        "shardpdfProfile": "release",
+        "git": "dbf4c7d"
       },
-      "timestamp": "2026-09-14T14:55:43.570Z",
+      "timestamp": "2026-09-14T15:03:37.311Z",
       "notes": [
         "500/500 named link destinations are undefined"
       ]
