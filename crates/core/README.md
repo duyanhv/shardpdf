@@ -42,7 +42,7 @@ Native errors carry a stable `code` (typed as `ShardPdfErrorCode`):
 | `SHARDPDF_IO`            | Filesystem failure: input missing or unreadable, output unwritable. |
 | `SHARDPDF_MALFORMED`     | Structural problem: no pages, cyclic parents, duplicate destination, bad outline, bad page range. |
 | `SHARDPDF_CONSUMED`      | Method called on an `Assembly` already finalized or aborted.        |
-| `SHARDPDF_INVALID_ARG`   | An argument had the wrong type, was an empty path, or was a negative, fractional, or non-finite number. |
+| `SHARDPDF_INVALID_ARG`   | An argument had the wrong type, was an empty path, or was a negative, fractional, or non-finite number. Covers every `finalize()` outline field (`outline[i].pageIndex must be a non-negative integer, got 0.5`). |
 
 Every error thrown by the native layer carries one of these codes; napi's own
 conversion statuses (`StringExpected` and similar) are not exposed.

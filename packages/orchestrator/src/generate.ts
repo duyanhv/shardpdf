@@ -68,6 +68,7 @@ export async function generate<TData>(
 
   const emit = (event: ProgressEvent): void => options.onProgress?.(event);
 
+  let succeeded = false;
   try {
     // Pass 1 — measure (cache-aware, all shards concurrent under the pool cap).
     let measured = 0;
@@ -210,10 +211,7 @@ export async function generate<TData>(
       },
     });
 
-    if (options.keepCache !== true) {
-      await cache.destroy();
-    }
-
+    succeeded = true;
     return {
       outputPath: options.outputPath,
       totalPages,
@@ -223,6 +221,11 @@ export async function generate<TData>(
     };
   } finally {
     pool.dispose();
+    // A failed run keeps its cache so the next attempt can resume. A
+    // successful run asks for removal unless told to keep it; removal is
+    // deferred by ShardCache until no other run in this process holds the
+    // same directory open.
+    await cache.close({ destroy: succeeded && options.keepCache !== true });
   }
 }
 

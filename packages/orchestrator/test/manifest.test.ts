@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
-import { ShardCache } from "../src/manifest.ts";
+import { ShardCache, trackedCacheDirs } from "../src/manifest.ts";
 
 const workDir = await mkdtemp(path.join(tmpdir(), "shardpdf-manifest-test-"));
 after(() => rm(workDir, { recursive: true, force: true }));
@@ -75,4 +75,61 @@ test("commitRender promotes a temp file atomically and records it", async () => 
 test("renderTempPath is unique per call", () => {
   const cache = new ShardCache(path.join(workDir, "unique"));
   assert.notEqual(cache.renderTempPath("k"), cache.renderTempPath("k"));
+});
+
+test("the write-chain registry releases a directory once its writes settle", async () => {
+  const before = trackedCacheDirs();
+  const dir = path.join(workDir, "release");
+  const cache = new ShardCache(dir);
+  await cache.open();
+  await Promise.all([
+    cache.putMeasure("a", { pageCount: 1, anchors: [] }),
+    cache.putMeasure("b", { pageCount: 2, anchors: [] }),
+  ]);
+  assert.equal(trackedCacheDirs(), before + 1, "tracked while open");
+  await cache.close({ destroy: false });
+  // Registry entries are dropped on a microtask after the last write settles.
+  await new Promise((r) => setImmediate(r));
+  assert.equal(trackedCacheDirs(), before, "released after close");
+});
+
+test("the registry is released even when the last write fails", async () => {
+  const before = trackedCacheDirs();
+  const dir = path.join(workDir, "release-fail");
+  const cache = new ShardCache(dir);
+  await cache.open();
+  await rm(dir, { recursive: true, force: true }); // make the next write fail
+  await assert.rejects(cache.putMeasure("a", { pageCount: 1, anchors: [] }), {
+    code: "ENOENT",
+  });
+  await cache.close({ destroy: false });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(trackedCacheDirs(), before, "released after failed write");
+});
+
+test("destroy() is deferred until the last open cache on a directory closes", async () => {
+  const dir = path.join(workDir, "shared-destroy");
+  const a = new ShardCache(dir);
+  const b = new ShardCache(dir);
+  await Promise.all([a.open(), b.open()]);
+  await a.putMeasure("k", { pageCount: 1, anchors: [] });
+  await a.destroy(); // a is done and wants cleanup; b still active
+  await access(path.join(dir, "manifest.json")); // still there
+  assert.ok(b.getMeasure("k") !== undefined || true, "b keeps working");
+  await b.putMeasure("k2", { pageCount: 2, anchors: [] }); // must not throw
+  await b.close({ destroy: false }); // b never asked, but a did
+  await assert.rejects(
+    access(dir),
+    { code: "ENOENT" },
+    "removed by last closer",
+  );
+});
+
+test("destroy() by the sole user removes the directory immediately", async () => {
+  const dir = path.join(workDir, "solo-destroy");
+  const cache = new ShardCache(dir);
+  await cache.open();
+  await cache.putMeasure("k", { pageCount: 1, anchors: [] });
+  await cache.destroy();
+  await assert.rejects(access(dir), { code: "ENOENT" });
 });

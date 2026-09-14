@@ -226,6 +226,64 @@ test("a missing input file is SHARDPDF_IO, a corrupt one is SHARDPDF_PDF_PARSE",
   });
 });
 
+test("finalize validates the outline shape and reports SHARDPDF_INVALID_ARG", () => {
+  /** @type {[string, unknown][]} */
+  const cases = [
+    ["not an array", "x"],
+    ["plain object", {}],
+    ["entry not object", [1]],
+    ["entry null", [null]],
+    ["title missing", [{ pageIndex: 0 }]],
+    ["title number", [{ title: 1, pageIndex: 0 }]],
+    ["pageIndex missing", [{ title: "a" }]],
+    ["pageIndex fractional", [{ title: "a", pageIndex: 0.5 }]],
+    ["pageIndex negative", [{ title: "a", pageIndex: -1 }]],
+    ["pageIndex string", [{ title: "a", pageIndex: "0" }]],
+    ["pageIndex NaN", [{ title: "a", pageIndex: Number.NaN }]],
+    ["level fractional", [{ title: "a", pageIndex: 0, level: 0.5 }]],
+    ["level negative", [{ title: "a", pageIndex: 0, level: -1 }]],
+    ["level string", [{ title: "a", pageIndex: 0, level: "0" }]],
+  ];
+  for (const [label, outline] of cases) {
+    const assembly = new Assembly(path.join(workDir, "outline-shape.partial"));
+    try {
+      assembly.appendShard(seedPath);
+      assert.throws(
+        () => assembly.finalize(asAny(outline)),
+        { code: "SHARDPDF_INVALID_ARG" },
+        label,
+      );
+      // A rejected outline must not consume the assembly.
+      assert.equal(assembly.consumed, false, `${label}: still usable`);
+    } finally {
+      assembly.abort();
+    }
+  }
+  // Structural problems remain MALFORMED (the shape was fine).
+  /** @type {[string, unknown][]} */
+  const structural = [
+    ["page out of range", [{ title: "a", pageIndex: 99 }]],
+    ["level jump", [{ title: "a", pageIndex: 0, level: 2 }]],
+  ];
+  for (const [label, outline] of structural) {
+    const assembly = new Assembly(path.join(workDir, "outline-struct.partial"));
+    assembly.appendShard(seedPath);
+    assert.throws(
+      () => assembly.finalize(asAny(outline)),
+      { code: "SHARDPDF_MALFORMED" },
+      label,
+    );
+  }
+  // level is optional at the native layer as well as in assemble().
+  const ok = new Assembly(path.join(workDir, "outline-ok.pdf"));
+  ok.appendShard(seedPath);
+  ok.finalize([
+    { title: "a", pageIndex: 0 },
+    { title: "b", pageIndex: 1, level: 1 },
+  ]);
+  assert.equal(ok.consumed, true);
+});
+
 test("low-level abort is idempotent and consumes the assembly", async () => {
   const partialPath = path.join(workDir, "low-level.partial");
   const assembly = new Assembly(partialPath);

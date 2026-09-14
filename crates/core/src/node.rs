@@ -14,7 +14,7 @@
 //! liveness should yield between appends (the `assemble()` wrapper does).
 
 use crate::{assembler, extract, outline};
-use napi::bindgen_prelude::{FromNapiValue, Unknown};
+use napi::bindgen_prelude::{FromNapiValue, JsObjectValue, JsValue, Object, Unknown};
 use napi::ValueType;
 use napi_derive::napi;
 
@@ -112,6 +112,105 @@ fn page_number(value: Unknown, name: &str) -> Result<u32> {
     Ok(n as u32)
 }
 
+fn type_name(value: &Unknown) -> String {
+    value
+        .get_type()
+        .map(|t| format!("{t:?}").to_lowercase())
+        .unwrap_or_else(|_| "unknown".into())
+}
+
+fn bad_arg(msg: String) -> napi::Error<ErrorCode> {
+    napi::Error::new(ErrorCode::InvalidArg, msg)
+}
+
+fn field<'e>(entry: &Object<'e>, index: u32, name: &str) -> Result<Unknown<'e>> {
+    entry
+        .get_named_property_unchecked::<Unknown>(name)
+        .map_err(|e| bad_arg(format!("outline[{index}].{name}: {}", e.reason)))
+}
+
+fn u32_field(entry: &Object<'_>, index: u32, name: &str) -> Result<u32> {
+    let raw = field(entry, index, name)?;
+    let value = match raw.get_type() {
+        Ok(ValueType::Number) => f64::from_unknown(raw).map_err(|e| bad_arg(e.reason))?,
+        _ => {
+            return Err(bad_arg(format!(
+                "outline[{index}].{name} must be a non-negative integer, got {}",
+                type_name(&raw)
+            )))
+        }
+    };
+    if !value.is_finite() || value.fract() != 0.0 || value < 0.0 || value > u32::MAX as f64 {
+        return Err(bad_arg(format!(
+            "outline[{index}].{name} must be a non-negative integer, got {value}"
+        )));
+    }
+    Ok(value as u32)
+}
+
+/// Parses `finalize()`'s optional outline argument with explicit checks, so
+/// a wrong shape reports `SHARDPDF_INVALID_ARG` naming the entry and field
+/// instead of a napi conversion status, and fractional or negative numbers
+/// are rejected rather than silently truncated or wrapped.
+fn outline_arg(value: Option<Unknown>) -> Result<Option<Vec<outline::OutlineEntry>>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value.get_type() {
+        Ok(ValueType::Undefined) | Ok(ValueType::Null) => return Ok(None),
+        Ok(ValueType::Object) => {}
+        _ => {
+            return Err(bad_arg(format!(
+                "outline must be an array, got {}",
+                type_name(&value)
+            )))
+        }
+    }
+    let array = Object::from_unknown(value).map_err(|e| bad_arg(e.reason))?;
+    if !array.is_array().unwrap_or(false) {
+        return Err(bad_arg("outline must be an array, got object".into()));
+    }
+    let len = array.get_array_length().map_err(|e| bad_arg(e.reason))?;
+    let mut entries = Vec::with_capacity(len as usize);
+    for index in 0..len {
+        let raw: Unknown = array
+            .get_element(index)
+            .map_err(|e| bad_arg(format!("outline[{index}]: {}", e.reason)))?;
+        if !matches!(raw.get_type(), Ok(ValueType::Object)) {
+            return Err(bad_arg(format!(
+                "outline[{index}] must be an object, got {}",
+                type_name(&raw)
+            )));
+        }
+        let entry = Object::from_unknown(raw).map_err(|e| bad_arg(e.reason))?;
+        let title_raw = field(&entry, index, "title")?;
+        let title = match title_raw.get_type() {
+            Ok(ValueType::String) => {
+                String::from_unknown(title_raw).map_err(|e| bad_arg(e.reason))?
+            }
+            _ => {
+                return Err(bad_arg(format!(
+                    "outline[{index}].title must be a string, got {}",
+                    type_name(&title_raw)
+                )))
+            }
+        };
+        let page_index = u32_field(&entry, index, "pageIndex")?;
+        // `level` is optional at the JS wrapper level (defaults to 0).
+        let level_raw = field(&entry, index, "level")?;
+        let level = match level_raw.get_type() {
+            Ok(ValueType::Undefined) | Ok(ValueType::Null) => 0,
+            _ => u32_field(&entry, index, "level")?,
+        };
+        entries.push(outline::OutlineEntry {
+            title,
+            page_index,
+            level,
+        });
+    }
+    Ok(Some(entries))
+}
+
 /// Extract an inclusive, 1-based page range from `inputPath` into
 /// `outputPath`, copying only objects the selected pages reach. Returns the
 /// extracted page count. v1 drops link annotations, named destinations, and
@@ -147,7 +246,8 @@ pub struct OutlineEntry {
     pub title: String,
     /// 0-based absolute page index in the assembled document.
     pub page_index: u32,
-    pub level: u32,
+    /// Nesting depth; defaults to 0 when omitted.
+    pub level: Option<u32>,
 }
 
 #[napi]
@@ -198,17 +298,13 @@ impl Assembly {
     }
 
     /// Writes the assembled document, with optional bookmarks. Consumed.
-    #[napi(catch_unwind)]
-    pub fn finalize(&mut self, outline: Option<Vec<OutlineEntry>>) -> Result<()> {
-        let entries: Option<Vec<outline::OutlineEntry>> = outline.map(|list| {
-            list.into_iter()
-                .map(|e| outline::OutlineEntry {
-                    title: e.title,
-                    page_index: e.page_index,
-                    level: e.level,
-                })
-                .collect()
-        });
+    /// `level` may be omitted per entry (defaults to 0).
+    #[napi(
+        catch_unwind,
+        ts_args_type = "outline?: Array<OutlineEntry> | undefined | null"
+    )]
+    pub fn finalize(&mut self, outline: Option<Unknown>) -> Result<()> {
+        let entries = outline_arg(outline)?;
         self.inner
             .take()
             .ok_or_else(consumed)?

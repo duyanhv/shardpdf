@@ -295,6 +295,58 @@ test("two concurrent generate() calls sharing output and cache both succeed", as
 });
 
 test("a truncated cached shard from a crashed render is not reused", async () => {
+  await truncatedCacheScenario();
+});
+
+test("a short run finishing with default keepCache does not delete a longer run's cache", async () => {
+  // Both runs share one cache dir. The short run finishes first and, with
+  // keepCache unset (false), asks for cleanup. That must be deferred until
+  // the long run has closed its cache, or the long run fails with ENOENT on
+  // manifest writes and shard reads.
+  const cacheDir = path.join(workDir, "shared-cleanup-cache");
+  const shortPlan: DocumentPlan<TestSection> = {
+    adapter: { module: ADAPTER_PATH, export: "adapter" },
+    sections: [
+      { id: "tiny", data: { kind: "body", pages: 1 }, pageEstimate: 1 },
+    ],
+  };
+  const longPlan: DocumentPlan<TestSection> = {
+    adapter: { module: ADAPTER_PATH, export: "adapter" },
+    sections: Array.from({ length: 6 }, (_, i) => ({
+      id: `long${i}`,
+      data: { kind: "body", pages: 30 },
+      pageEstimate: 30,
+    })),
+  };
+  for (let trial = 0; trial < 3; trial++) {
+    const results = await Promise.allSettled([
+      generate(longPlan, {
+        outputPath: path.join(workDir, `long${trial}.pdf`),
+        cacheDir,
+        maxPagesPerShard: 30,
+        concurrency: 2,
+      }),
+      generate(shortPlan, {
+        outputPath: path.join(workDir, `short${trial}.pdf`),
+        cacheDir,
+        maxPagesPerShard: 30,
+        concurrency: 1,
+      }),
+    ]);
+    assert.deepEqual(
+      results.map((r) => r.status),
+      ["fulfilled", "fulfilled"],
+      `trial ${trial}: ${results
+        .filter((r) => r.status === "rejected")
+        .map((r) => (r as PromiseRejectedResult).reason.message)
+        .join("; ")}`,
+    );
+    // Both finished with keepCache false, so the last closer removed it.
+    await assert.rejects(stat(cacheDir), { code: "ENOENT" });
+  }
+});
+
+async function truncatedCacheScenario(): Promise<void> {
   const outputPath = path.join(workDir, "truncated.pdf");
   const cacheDir = path.join(workDir, "truncated-cache");
   await generate(testPlan(), {
@@ -321,4 +373,4 @@ test("a truncated cached shard from a crashed render is not reused", async () =>
   });
   assert.equal(second.cachedShards, 3, "complete shards reused");
   assert.ok((await stat(outputPath)).size > 0);
-});
+}

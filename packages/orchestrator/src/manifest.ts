@@ -26,11 +26,51 @@ function emptyManifest(): ManifestData {
 }
 
 /**
- * One write chain per manifest path, shared by every ShardCache instance in
- * this process. Two `generate()` calls on the same cache dir then persist
- * strictly one after another, each merging the other's entries.
+ * Per-directory state shared by every open ShardCache in this process.
+ *
+ * - `users`: open caches. `destroy()` removes the directory only when the
+ *   last user closes; earlier callers just mark it. Without this, a short
+ *   run finishing with `keepCache: false` deleted files a longer run in the
+ *   same process was still reading.
+ * - `pendingDestroy`: set when any user asked for cleanup; honored by
+ *   whichever user closes last.
+ * - `chain`: serializes manifest writes. Dropped once the last queued write
+ *   settles so the registry does not grow with every directory ever seen.
  */
-const persistChains = new Map<string, Promise<void>>();
+interface DirState {
+  users: number;
+  pendingDestroy: boolean;
+  chain: Promise<void> | undefined;
+  inFlight: number;
+}
+
+const registry = new Map<string, DirState>();
+
+function stateFor(dir: string): DirState {
+  let state = registry.get(dir);
+  if (state === undefined) {
+    state = { users: 0, pendingDestroy: false, chain: undefined, inFlight: 0 };
+    registry.set(dir, state);
+  }
+  return state;
+}
+
+function maybeForget(dir: string): void {
+  const state = registry.get(dir);
+  if (
+    state !== undefined &&
+    state.users === 0 &&
+    state.inFlight === 0 &&
+    !state.pendingDestroy
+  ) {
+    registry.delete(dir);
+  }
+}
+
+/** Test/diagnostic hook: number of directories the registry is tracking. */
+export function trackedCacheDirs(): number {
+  return registry.size;
+}
 
 /**
  * Resume manifest + shard file cache. Keys are content hashes of everything
@@ -38,18 +78,21 @@ const persistChains = new Map<string, Promise<void>>();
  * every completed shard so a crashed run resumes instead of restarting
  * (design spec §Workers, errors, resume).
  *
- * Concurrency model: several `generate()` calls may share a cache directory.
- * Every persist re-reads the on-disk manifest, merges this instance's entries
- * into it, and replaces it atomically through a uniquely named temp file.
- * Within one process, persists to the same manifest are serialized across
- * all instances, so no stale snapshot can overwrite a newer one.
+ * Concurrency model, within one process: several `generate()` calls may
+ * share a cache directory. Persists to the same manifest are serialized and
+ * each one re-reads the on-disk manifest and merges before writing, so no
+ * stale snapshot can overwrite a newer one. Cleanup is reference counted:
+ * the directory is removed only when the last open cache closes with a
+ * destroy request outstanding.
  *
- * Across processes there is no lock: two processes that read, merge, and
- * rename at the same instant can lose one entry. The cost is a redundant
- * re-render of that shard on the next resume, never a wrong document, since
- * entries are idempotent and shard files are only recorded once complete.
- * A cross-process lock is deliberately out of scope for this layer; the
- * pluggable cache backend planned in the design spec is the place for it.
+ * Across processes there is no lock and no reference count. Two processes
+ * that read, merge, and rename at the same instant can lose one entry (cost:
+ * one redundant re-render on the next resume, never a wrong document), and
+ * a process finishing with `keepCache: false` can delete shards another
+ * process still needs (that run fails with `SHARDPDF_IO`; nothing corrupt is
+ * produced). Processes sharing a cache directory should pass `keepCache:
+ * true` and clean up externally, or use distinct `cacheDir`s. A pluggable
+ * cache backend with real locking is the design spec's answer.
  *
  * Shard PDFs are written to a temp path and renamed into place, so a reader
  * that finds `renderPath(key)` on disk always sees a complete file.
@@ -58,13 +101,17 @@ export class ShardCache {
   readonly dir: string;
   private readonly manifestPath: string;
   private data: ManifestData = emptyManifest();
+  private opened = false;
 
   constructor(dir: string) {
-    this.dir = dir;
-    this.manifestPath = path.join(dir, "manifest.json");
+    this.dir = path.resolve(dir);
+    this.manifestPath = path.join(this.dir, "manifest.json");
   }
 
   async open(): Promise<void> {
+    if (this.opened) return;
+    this.opened = true;
+    stateFor(this.dir).users++;
     await mkdir(this.dir, { recursive: true });
     this.data = await this.readDisk();
   }
@@ -117,18 +164,48 @@ export class ShardCache {
     return file;
   }
 
-  async destroy(): Promise<void> {
-    await rm(this.dir, { recursive: true, force: true });
+  /**
+   * Releases this cache's hold on the directory. With `destroy`, requests
+   * removal; the directory is actually deleted only when the last open
+   * cache in this process closes and some closer asked for removal.
+   */
+  async close(options: { destroy: boolean }): Promise<void> {
+    if (!this.opened) return;
+    this.opened = false;
+    const state = stateFor(this.dir);
+    state.users--;
+    if (options.destroy) state.pendingDestroy = true;
+    if (state.users === 0 && state.pendingDestroy) {
+      // Let any queued manifest write finish before removing its directory.
+      if (state.chain !== undefined) await state.chain.catch(() => {});
+      state.pendingDestroy = false;
+      await rm(this.dir, { recursive: true, force: true });
+    }
+    maybeForget(this.dir);
+  }
+
+  /** Close and remove the directory (subject to other open users). */
+  destroy(): Promise<void> {
+    return this.close({ destroy: true });
   }
 
   private persist(): Promise<void> {
-    const previous = persistChains.get(this.manifestPath) ?? Promise.resolve();
+    const state = stateFor(this.dir);
+    const previous = state.chain ?? Promise.resolve();
+    state.inFlight++;
     const run = previous.then(() => this.persistNow());
-    // Keep the chain alive even if one persist fails.
-    persistChains.set(
-      this.manifestPath,
-      run.catch(() => {}),
+    const settled = run.then(
+      () => {},
+      () => {},
     );
+    state.chain = settled;
+    void settled.then(() => {
+      state.inFlight--;
+      if (state.inFlight === 0 && state.chain === settled) {
+        state.chain = undefined;
+        maybeForget(this.dir);
+      }
+    });
     return run;
   }
 

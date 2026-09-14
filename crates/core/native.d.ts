@@ -17,7 +17,10 @@ export declare class Assembly {
    * call it unconditionally.
    */
   abort(): void
-  /** Writes the assembled document, with optional bookmarks. Consumed. */
+  /**
+   * Writes the assembled document, with optional bookmarks. Consumed.
+   * `level` may be omitted per entry (defaults to 0).
+   */
   finalize(outline?: Array<OutlineEntry> | undefined | null): void
 }
 
@@ -38,5 +41,6 @@ export interface OutlineEntry {
   title: string
   /** 0-based absolute page index in the assembled document. */
   pageIndex: number
-  level: number
+  /** Nesting depth; defaults to 0 when omitted. */
+  level?: number
 }
