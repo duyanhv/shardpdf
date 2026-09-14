@@ -9,8 +9,8 @@ as the oracle (installed for this audit; see §7). Items marked **fixed** landed
 
 ## Summary
 
-The core design is sound: the one-shard working set is real (measured 6 MB
-RSS delta across four 500-page appends), the fuzz harness and the
+The core design is sound: the one-shard working set is real (5 MB peak
+delta per 500-page append under an external sampler, release build), the fuzz harness and the
 `mutated_shards_never_panic` test cover the parser boundary, and the atomic
 partial-then-rename discipline is correct. The audit found two output
 correctness bugs in the assembler that no existing test exercised, a napi
@@ -22,8 +22,8 @@ that duplicated (and subtly diverged from) the core's assembly path.
 | Rust core correctness | 3 | 3 | 0 |
 | napi boundary | 5 | 5 | 0 |
 | JS wrapper | 2 | 2 | 0 |
-| Orchestrator | 6 | 5 | 1 |
-| Memory | 0 bugs, 2 clarifications | n/a | 2 |
+| Orchestrator | 7 | 6 | 1 |
+| Memory | 0 bugs, 1 measurement error corrected | n/a | 1 |
 | Developer UX | 4 | 4 | 0 |
 
 ## 1. Rust core
@@ -81,16 +81,31 @@ None of the bindings used `catch_unwind`. napi-rs's default is to let a Rust
 panic unwind across the FFI boundary, which is UB and in practice aborts Node.
 The core is written defensively, but `outline.rs` has two `expect()` calls and
 lopdf itself is a large dependency. All bindings now carry
-`#[napi(catch_unwind)]`; a panic becomes a JS exception.
+`#[napi(catch_unwind)]`; an *unwinding* panic becomes a JS exception.
+`catch_unwind` cannot intercept process-aborting failures (stack overflow,
+allocator OOM abort, `process::abort`, or a build with `panic = "abort"`);
+those still terminate the host, and the README says so.
 
-### 2.2 No machine-readable error codes (fixed, medium)
+### 2.2 No machine-readable error codes (fixed, medium; tightened after review)
 
 Every error was `Error::from_reason(msg)` with `code: "GenericFailure"`.
-Tests matched on `/pdf error/i` and `/malformed/i`. Callers had no way to
-distinguish "input file missing" from "input is corrupt" from "you called
-finalize twice" without regex. A custom `ErrorCode` status type now yields
-`error.code` in `SHARDPDF_PDF_PARSE | IO | MALFORMED | CONSUMED | INVALID_ARG`,
-exported as `ShardPdfErrorCode` in `index.d.ts`.
+Tests matched on `/pdf error/i` and `/malformed/i`. A custom `ErrorCode`
+status type now yields `error.code` in
+`SHARDPDF_PDF_PARSE | IO | MALFORMED | CONSUMED | INVALID_ARG`, exported as
+`ShardPdfErrorCode` in `index.d.ts`.
+
+External review found two gaps in the first version of this fix, both now
+closed:
+
+- A missing input file reported `SHARDPDF_PDF_PARSE`, because lopdf wraps
+  the `io::Error` in its own type. `From<lopdf::Error>` now unwraps
+  `lopdf::Error::IO` into `AssemblyError::Io`, so missing is `SHARDPDF_IO`
+  and corrupt is `SHARDPDF_PDF_PARSE`.
+- A wrong-typed argument (`extractPages(42, ...)`) surfaced napi's own
+  `StringExpected` status, outside the advertised union. String and number
+  parameters are now taken as `Unknown` and validated in Rust, so every
+  argument failure is `SHARDPDF_INVALID_ARG` naming the parameter and the
+  type received. `ts_args_type` keeps the generated `.d.ts` unchanged.
 
 ### 2.3 Silent integer truncation (fixed, medium)
 
@@ -179,44 +194,86 @@ crashes while amortizing startup; the spec's `ResourcePolicy.maxWorkerRssMb`
 would be the natural trigger. Not changed: it is a tuning decision the
 benchmark should drive.
 
-### 4.7 Observations
+### 4.7 Concurrent `generate()` calls sharing a cache (fixed after external review, high)
 
-- `ShardCache.getRender` checks `access(file)` but not that the file is
-  complete. A crash mid-render leaves a truncated PDF that the next run will
-  try to append; the core rejects it (`SHARDPDF_PDF_PARSE`) but the run fails
-  instead of re-rendering. The spec's "verify cached page counts and hashes
-  before reuse" is the fix; deferred to the pipeline layer it describes.
-- `manifest.json` is rewritten on every shard completion under
-  `Promise.all`. With concurrency 4 that is fine; at higher fan-out the unique
-  tmp-per-write already makes it safe, just chatty.
+My first pass claimed the manifest's unique temp names made last-writer-wins
+safe. External review of the report showed that claim was false on two
+counts, both reproduced:
+
+- **Temp-name collision.** Names were `<manifest>.<pid>.<counter>`. Two
+  `ShardCache` instances in one process (two `generate()` calls on the same
+  output, hence the same default cache dir) both start the counter at 0, so
+  their first persists targeted the same temp file and one `rename` failed
+  with `ENOENT`. Reproduced in 3/3 trials.
+- **Ordering.** Unique names do not preserve write order. An instance whose
+  in-memory snapshot was stale and renamed last erased entries a newer
+  snapshot had written. Reproduced: keys `[first, second]` became `[second]`.
+
+Fix: persists to one manifest path are serialized process-wide through a
+shared promise chain; every persist re-reads the on-disk manifest and merges
+before writing; temp names carry a UUID. Rendered shards now go to a unique
+temp path and are promoted with `rename` on completion, so only complete
+files ever sit at the cache path. That also closes the truncated-shard
+resume issue below. Cross-process writers are still unlocked: a lost race
+costs one redundant re-render, never a wrong document. Tests:
+`manifest.test.ts` plus two concurrent-`generate()` and truncated-cache
+scenarios in `generate.test.ts` (10/10 external trials clean).
+
+### 4.8 Observations
+
+- ~~`ShardCache.getRender` checks `access(file)` but not completeness~~
+  Addressed by the temp-then-rename render path in 4.7.
 - `worker.ts` treats a specifier starting with `.` as pre-resolved, but
   `generate()` always absolutizes, so that branch is dead. Harmless.
 
 ## 5. Memory
 
-No bugs. Two clarifications worth writing down:
+No bugs found. One earlier claim in this section was not supported by its
+own evidence and is corrected here.
 
-- **What "one shard" means.** lopdf's `Document::load` does `read_to_end`
-  then parses everything into a `BTreeMap<ObjectId, Object>`. Peak native
-  memory per append is therefore roughly `shard bytes + parsed object tree`,
-  and the object tree can be several times the file size for
-  compression-heavy shards (every stream is held decompressed if lopdf
-  touched it). "O(largest shard)" in the spec is correct but the constant is
-  more like 3x to 5x than 1x. The measured 6 MB delta for 240 KB shards is
-  consistent with that.
-- **Decompression bombs.** lopdf 0.44 exposes
-  `LoadOptions.max_decompressed_size` and the assembler does not set it. For
-  the intended use (shards the host rendered itself) this is fine. If
-  `extractPages` or `appendShard` ever take user-uploaded PDFs, a 1 MB shard
-  with a 4 GB inflate is a trivial DoS. Recommend surfacing this as an option
-  before that use case exists.
+**Measurement validity.** My first numbers came from an in-process
+`setInterval` sampler (and the soak test used the same technique). That
+sampler cannot fire while `appendShard` holds the event loop, so it only
+observes the troughs between appends and misses the peak inside the native
+parse. External review caught this. The soak test now spawns a separate
+sampler process that polls `ps` every 2 ms, and all figures below were
+re-measured that way.
 
-Measured on this machine (debug build, Apple Silicon):
+**What "one shard" costs.** External sampler, 3 distinct pdfkit shards per
+size appended back to back, delta = peak RSS during appends minus idle
+baseline:
+
+| Shard | Bytes | Debug peak delta | Release peak delta | Release multiplier |
+| --- | --- | --- | --- | --- |
+| 100 pages | 0.05 MB | 3.9 MB | 2.0 MB | 42x |
+| 500 pages | 0.24 MB | 7.3 MB | 5.1 MB | 21x |
+| 2,000 pages | 0.96 MB | 19.3 MB | 17.6 MB | 18x |
+
+The multiplier is large and falls with shard size, which says the cost is
+dominated by lopdf's per-object overhead (a `BTreeMap<ObjectId, Object>`
+with heap-allocated dictionaries, names, and content `Vec`s) rather than by
+the raw bytes. The earlier "3x to 5x" figure was a guess from the trough
+sampler and is withdrawn. "O(largest shard)" in the spec holds, with a
+constant of roughly 18x to 20x file bytes for text-heavy pdfkit output at
+release; image-heavy shards with large already-compressed streams will show
+a smaller multiplier because their bytes are mostly opaque blobs.
+
+**Boundedness.** Soak with the external sampler: 1,000 pages 89 MB peak,
+3,000 pages 91 MB peak (71 and 120 samples). The invariant the spec promises
+holds when measured properly.
+
+**Decompression bombs.** lopdf 0.44 exposes
+`LoadOptions.max_decompressed_size` and the assembler does not set it. For
+the intended use (shards the host rendered itself) this is fine. If
+`extractPages` or `appendShard` ever take user-uploaded PDFs, a 1 MB shard
+with a 4 GB inflate is a trivial DoS. Recommend surfacing this as an option
+before that use case exists.
+
+Timing (debug build, Apple Silicon):
 
 | Operation | Time | Notes |
 | --- | --- | --- |
 | `appendShard`, 500-page pdfkit shard, 238 KB | 57 ms | blocks JS thread |
-| 4 such appends, RSS delta | 6.4 MB | working set is released between shards |
 | 200 appends of a 2-page shard | 160 ms | 0.8 ms each |
 
 ## 6. Developer UX
@@ -304,7 +361,16 @@ Node 24.15 and Bun 1.3.14, observed identical results:
 | pdfkit 0.19 shard through `assemble()` | 94,938 B in, 97,680 B out, qpdf clean (pdfkit emits no ObjStm; fix 1.2 is a no-op for it) |
 | qpdf-packed shard through `assemble()` | 39,794 B in (5 ObjStm), 97,421 B out (0 ObjStm), qpdf clean |
 
-### 7.3 Final pass over the finished tree
+### 7.3 Post-review pass
+
+An external review of this report found four errors (concurrent cache use
+unsafe, manifest ordering claim false, error codes imprecise, memory
+sampler blind to native peaks) plus one wording issue (panic coverage). All
+five are fixed in commits `0463f08` and `c76f687` and the sections above
+are rewritten to match. Every claim in §4.7, §2.2 and §5 was re-measured
+after the fix, and the suites below were rerun.
+
+### 7.4 Final pass over the finished tree
 
 The checks in 7.1 and 7.2 were developed incrementally while fixes landed.
 After the last commit, the whole set was rerun once from a clean state
@@ -324,7 +390,7 @@ HEAD `23457e0`:
 
 Working tree clean after the pass; no probe files remain.
 
-### 7.4 Suite results
+### 7.5 Suite results
 
 
 | Check | Result |
@@ -356,4 +422,5 @@ skips after qpdf was installed; that is fixed (§6.3).
    `docs/benchmarks` (soak already reran: unchanged).
 2. Decide whether `max_decompressed_size` should be an `Assembly` constructor
    option now or wait for an untrusted-input use case.
-3. Cache-entry validation on resume (4.7) when the pipeline layer lands.
+3. Cross-process manifest locking if two *processes* ever share a cache dir
+   (4.7); today a race costs one redundant re-render.
