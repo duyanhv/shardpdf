@@ -46,7 +46,13 @@ impl std::error::Error for AssemblyError {}
 
 impl From<lopdf::Error> for AssemblyError {
     fn from(e: lopdf::Error) -> Self {
-        AssemblyError::Pdf(e)
+        // lopdf wraps filesystem failures (missing input file, permission
+        // denied) in its own error type. Callers need to tell "file not
+        // there" from "file is not a PDF", so unwrap IO back out.
+        match e {
+            lopdf::Error::IO(io) => AssemblyError::Io(io),
+            other => AssemblyError::Pdf(other),
+        }
     }
 }
 

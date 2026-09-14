@@ -6,15 +6,15 @@ export { Assembly, extractPages } from "./native.js";
  * rather than on message text.
  */
 export type ShardPdfErrorCode =
-  /** The shard could not be parsed as a PDF. */
+  /** The input exists but could not be parsed as a PDF. */
   | "SHARDPDF_PDF_PARSE"
-  /** Filesystem failure reading a shard or writing the output. */
+  /** Filesystem failure: input missing/unreadable or output unwritable. */
   | "SHARDPDF_IO"
   /** The shard parsed but violates a structural expectation. */
   | "SHARDPDF_MALFORMED"
   /** Method called on an assembly already consumed by finalize()/abort(). */
   | "SHARDPDF_CONSUMED"
-  /** A JavaScript argument was out of range or of the wrong shape. */
+  /** An argument had the wrong type, was an empty path, or was out of range. */
   | "SHARDPDF_INVALID_ARG";
 
 export interface ShardPdfError extends Error {

@@ -1,8 +1,10 @@
 //! napi bindings (feature `node`). All orchestration lives in TypeScript;
 //! this file only marshals across the boundary.
 //!
-//! Every binding is `catch_unwind`: a panic anywhere in the core surfaces as
-//! a JavaScript exception instead of aborting the host process.
+//! Every binding is `catch_unwind`: an unwinding panic anywhere in the core
+//! surfaces as a JavaScript exception instead of aborting the host process.
+//! Process-aborting failures (stack overflow, allocator OOM abort,
+//! `process::abort`) are outside what `catch_unwind` can intercept.
 //!
 //! Errors carry a stable `code` property (see [`ErrorCode`]) so callers can
 //! branch on the class of failure without matching on message text.
@@ -12,14 +14,16 @@
 //! liveness should yield between appends (the `assemble()` wrapper does).
 
 use crate::{assembler, extract, outline};
+use napi::bindgen_prelude::{FromNapiValue, Unknown};
+use napi::ValueType;
 use napi_derive::napi;
 
 /// Stable error codes exposed as `error.code` on the JavaScript side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
-    /// The shard could not be parsed as a PDF.
+    /// The input exists but could not be parsed as a PDF.
     PdfParse,
-    /// Filesystem failure reading a shard or writing the output.
+    /// Filesystem failure: input missing or unreadable, output unwritable.
     Io,
     /// The shard parsed but violates a structural expectation
     /// (no pages, cyclic parent chain, duplicate destination, bad outline).
@@ -58,16 +62,54 @@ fn consumed() -> napi::Error<ErrorCode> {
     napi::Error::new(ErrorCode::Consumed, "assembly already finalized or aborted")
 }
 
-/// `u32` parameters arrive as f64 from JavaScript; napi truncates silently
-/// (`1.7` → `1`, `-1` → `4294967295`). Validate here so misuse is loud.
-fn page_number(value: f64, name: &str) -> Result<u32> {
-    if !value.is_finite() || value.fract() != 0.0 || value < 0.0 || value > u32::MAX as f64 {
+fn invalid_arg(name: &str, expected: &str, value: &Unknown) -> napi::Error<ErrorCode> {
+    let got = value
+        .get_type()
+        .map(|t| format!("{t:?}").to_lowercase())
+        .unwrap_or_else(|_| "unknown".into());
+    napi::Error::new(
+        ErrorCode::InvalidArg,
+        format!("{name} must be {expected}, got {got}"),
+    )
+}
+
+/// napi's own coercion would throw its `StringExpected` status for a wrong
+/// type. Take the raw value instead so every argument failure reports
+/// `SHARDPDF_INVALID_ARG`.
+fn string_arg(value: Unknown, name: &str) -> Result<String> {
+    match value.get_type() {
+        Ok(ValueType::String) => String::from_unknown(value)
+            .map_err(|e| napi::Error::new(ErrorCode::InvalidArg, e.reason)),
+        _ => Err(invalid_arg(name, "a string", &value)),
+    }
+}
+
+fn path_arg(value: Unknown, name: &str) -> Result<String> {
+    let s = string_arg(value, name)?;
+    if s.is_empty() {
         return Err(napi::Error::new(
             ErrorCode::InvalidArg,
-            format!("{name} must be a non-negative integer, got {value}"),
+            format!("{name} must be a non-empty path"),
         ));
     }
-    Ok(value as u32)
+    Ok(s)
+}
+
+/// `u32` parameters arrive as f64 from JavaScript; napi truncates silently
+/// (`1.7` → `1`, `-1` → `4294967295`). Validate here so misuse is loud.
+fn page_number(value: Unknown, name: &str) -> Result<u32> {
+    let n = match value.get_type() {
+        Ok(ValueType::Number) => f64::from_unknown(value)
+            .map_err(|e| napi::Error::new(ErrorCode::InvalidArg, e.reason))?,
+        _ => return Err(invalid_arg(name, "a non-negative integer", &value)),
+    };
+    if !n.is_finite() || n.fract() != 0.0 || n < 0.0 || n > u32::MAX as f64 {
+        return Err(napi::Error::new(
+            ErrorCode::InvalidArg,
+            format!("{name} must be a non-negative integer, got {n}"),
+        ));
+    }
+    Ok(n as u32)
 }
 
 /// Extract an inclusive, 1-based page range from `inputPath` into
@@ -75,15 +117,20 @@ fn page_number(value: f64, name: &str) -> Result<u32> {
 /// extracted page count. v1 drops link annotations, named destinations, and
 /// outlines from the result — parity note: a qpdf page slice also loses
 /// bookmarks, and keeps links only as silently-dangling targets.
-#[napi(catch_unwind)]
+#[napi(
+    catch_unwind,
+    ts_args_type = "inputPath: string, startPage: number, endPage: number, outputPath: string"
+)]
 pub fn extract_pages(
-    input_path: String,
-    start_page: f64,
-    end_page: f64,
-    output_path: String,
+    input_path: Unknown,
+    start_page: Unknown,
+    end_page: Unknown,
+    output_path: Unknown,
 ) -> Result<u32> {
+    let input_path = path_arg(input_path, "inputPath")?;
     let start_page = page_number(start_page, "startPage")?;
     let end_page = page_number(end_page, "endPage")?;
+    let output_path = path_arg(output_path, "outputPath")?;
     extract::extract_pages(
         std::path::Path::new(&input_path),
         start_page,
@@ -110,8 +157,9 @@ pub struct Assembly {
 
 #[napi]
 impl Assembly {
-    #[napi(constructor, catch_unwind)]
-    pub fn new(output_path: String) -> Result<Self> {
+    #[napi(constructor, catch_unwind, ts_args_type = "outputPath: string")]
+    pub fn new(output_path: Unknown) -> Result<Self> {
+        let output_path = path_arg(output_path, "outputPath")?;
         Ok(Assembly {
             inner: Some(assembler::Assembly::new(output_path).map_err(to_napi_err)?),
         })
@@ -119,8 +167,9 @@ impl Assembly {
 
     /// Appends one complete single-shard PDF; returns its page count.
     /// Synchronous: blocks the event loop for the duration of the parse.
-    #[napi(catch_unwind)]
-    pub fn append_shard(&mut self, shard_path: String) -> Result<u32> {
+    #[napi(catch_unwind, ts_args_type = "shardPath: string")]
+    pub fn append_shard(&mut self, shard_path: Unknown) -> Result<u32> {
+        let shard_path = path_arg(shard_path, "shardPath")?;
         self.inner
             .as_mut()
             .ok_or_else(consumed)?

@@ -38,14 +38,19 @@ Native errors carry a stable `code` (typed as `ShardPdfErrorCode`):
 
 | `code`                   | Meaning                                                             |
 | ------------------------ | ------------------------------------------------------------------- |
-| `SHARDPDF_PDF_PARSE`     | A shard could not be parsed as a PDF (includes missing input files). |
-| `SHARDPDF_IO`            | Filesystem failure writing the output.                              |
+| `SHARDPDF_PDF_PARSE`     | The input exists but could not be parsed as a PDF.                  |
+| `SHARDPDF_IO`            | Filesystem failure: input missing or unreadable, output unwritable. |
 | `SHARDPDF_MALFORMED`     | Structural problem: no pages, cyclic parents, duplicate destination, bad outline, bad page range. |
 | `SHARDPDF_CONSUMED`      | Method called on an `Assembly` already finalized or aborted.        |
-| `SHARDPDF_INVALID_ARG`   | A numeric argument was negative, fractional, or not finite.         |
+| `SHARDPDF_INVALID_ARG`   | An argument had the wrong type, was an empty path, or was a negative, fractional, or non-finite number. |
 
-Panics inside the native core are caught at the boundary and surface as
-ordinary JavaScript exceptions; they never abort the host process.
+Every error thrown by the native layer carries one of these codes; napi's own
+conversion statuses (`StringExpected` and similar) are not exposed.
+
+Unwinding panics inside the native core are caught at the boundary and surface
+as ordinary JavaScript exceptions. This does not cover process-aborting
+failures such as stack overflow, `std::process::abort`, or an out-of-memory
+abort in the allocator; those still terminate the host.
 
 `extractPages(inputPath, startPage, endPage, outputPath)` slices an inclusive,
 1-based page range into a new PDF, copying only objects the selected pages

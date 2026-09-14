@@ -174,13 +174,56 @@ test("extractPages rejects out-of-range and inverted ranges", async () => {
     [-1, 1],
     [1.5, 2],
     [Number.NaN, 1],
+    ["1", 2],
   ]) {
     assert.throws(
-      () => extractPages(sourcePath, start, end, outputPath),
+      () => extractPages(sourcePath, asAny(start), asAny(end), outputPath),
       { code: "SHARDPDF_INVALID_ARG" },
       `range ${start}-${end} must be rejected before reaching the core`,
     );
   }
+});
+
+test("every wrong-typed argument reports SHARDPDF_INVALID_ARG, not a napi status", () => {
+  const bad = [42, null, undefined, {}, ""].map(asAny);
+  for (const value of bad) {
+    assert.throws(
+      () => extractPages(value, 1, 1, "/tmp/never.pdf"),
+      { code: "SHARDPDF_INVALID_ARG" },
+      `inputPath=${String(value)}`,
+    );
+    assert.throws(() => new Assembly(value), { code: "SHARDPDF_INVALID_ARG" });
+  }
+  const assembly = new Assembly(path.join(workDir, "typed.partial"));
+  try {
+    for (const value of bad) {
+      assert.throws(
+        () => assembly.appendShard(value),
+        { code: "SHARDPDF_INVALID_ARG" },
+        `shardPath=${String(value)}`,
+      );
+    }
+  } finally {
+    assembly.abort();
+  }
+});
+
+test("a missing input file is SHARDPDF_IO, a corrupt one is SHARDPDF_PDF_PARSE", async () => {
+  const corrupt = path.join(workDir, "corrupt.pdf");
+  await writeFile(corrupt, "not a PDF");
+  assert.throws(
+    () =>
+      extractPages(
+        path.join(workDir, "does-not-exist.pdf"),
+        1,
+        1,
+        "/tmp/never.pdf",
+      ),
+    { code: "SHARDPDF_IO" },
+  );
+  assert.throws(() => extractPages(corrupt, 1, 1, "/tmp/never.pdf"), {
+    code: "SHARDPDF_PDF_PARSE",
+  });
 });
 
 test("low-level abort is idempotent and consumes the assembly", async () => {
@@ -196,6 +239,16 @@ test("low-level abort is idempotent and consumes the assembly", async () => {
   assert.throws(() => assembly.pageCount, { code: "SHARDPDF_CONSUMED" });
   await rm(partialPath);
 });
+
+/**
+ * Deliberately wrong-typed values for negative tests; the .d.ts says string
+ * and number, and that is what we are checking the native layer enforces.
+ * @param {unknown} value
+ * @returns {any}
+ */
+function asAny(value) {
+  return value;
+}
 
 /** @param {string} outputPath */
 async function partialsFor(outputPath) {
