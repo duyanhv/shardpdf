@@ -20,9 +20,9 @@ that duplicated (and subtly diverged from) the core's assembly path.
 | Area | Found | Fixed | Deferred |
 | --- | --- | --- | --- |
 | Rust core correctness | 3 | 3 | 0 |
-| napi boundary | 5 | 5 | 0 |
+| napi boundary | 6 | 6 | 0 |
 | JS wrapper | 2 | 2 | 0 |
-| Orchestrator | 7 | 6 | 1 |
+| Orchestrator | 10 | 9 | 1 (cross-process coordination) |
 | Memory | 0 bugs, 1 measurement error corrected | n/a | 1 |
 | Developer UX | 4 | 4 | 0 |
 
@@ -219,7 +219,48 @@ costs one redundant re-render, never a wrong document. Tests:
 `manifest.test.ts` plus two concurrent-`generate()` and truncated-cache
 scenarios in `generate.test.ts` (10/10 external trials clean).
 
-### 4.8 Observations
+### 4.8 Shared-cache cleanup, outline validation, registry leak (fixed after second review)
+
+A second review pass found three more issues, each reproduced before fixing:
+
+- **Cleanup deleted another run's files.** A short `generate()` finishing
+  with `keepCache` unset called `cache.destroy()` while a longer run in the
+  same process still needed the directory; the long run failed with `ENOENT`
+  (5/5 trials). `ShardCache` now reference-counts open users per directory.
+  `destroy()` only marks the directory; it is removed when the last user
+  closes. `generate()` always closes its cache in `finally` (destroy only on
+  success, so a failed run keeps its cache for resume). Regression test with
+  default `keepCache` fails on the old code, passes on the new.
+- **`finalize()` outline was validated by napi, not by us.** A bad shape
+  leaked six different napi statuses and fractional `pageIndex` / `level`
+  were silently truncated (negative wrapped to `u32::MAX`). The argument is
+  now `Unknown` and every field is checked in Rust: all shape errors are
+  `SHARDPDF_INVALID_ARG` naming `outline[i].field` and the value received; a
+  rejected outline does not consume the assembly; `level` is optional at the
+  native layer. 14 bad shapes covered on Node and Bun.
+- **Write-chain registry never shrank.** The per-manifest promise chain sat
+  in a module `Map` forever. Entries are released once the last queued write
+  settles (success or failure) and no cache holds the directory open;
+  `trackedCacheDirs()` exposes the count for tests.
+
+### 4.9 Cross-process limitations (explicit)
+
+Everything in 4.7 and 4.8 coordinates within **one Node process**. Across
+processes the cache has no lock, no reference count, and no leader:
+
+| Scenario | What happens | Severity |
+| --- | --- | --- |
+| Two processes persist the same manifest at the same instant | Read-merge-rename can lose one entry | Redundant re-render of that shard on next resume; output unaffected |
+| Process A finishes with `keepCache` unset while process B is mid-run on the same dir | A removes the directory; B fails with `SHARDPDF_IO` (manifest write or shard read) | Run fails loudly; no corrupt output |
+| Two processes render the same key concurrently | Each writes its own temp file; both `rename` to the same final path; last wins with identical bytes (deterministic adapter) | None |
+| Two processes assemble to the same `outputPath` | Each uses a `pid+uuid` partial and `rename`s; last wins with a complete file | None |
+
+Mitigation today: processes that share a cache directory must pass
+`keepCache: true` everywhere and clean up externally, or use distinct
+`cacheDir`s. Documented in the orchestrator README. A real fix is a lock
+file or lease in the pluggable cache backend the design spec plans.
+
+### 4.10 Observations
 
 - ~~`ShardCache.getRender` checks `access(file)` but not completeness~~
   Addressed by the temp-then-rename render path in 4.7.
@@ -370,7 +411,28 @@ five are fixed in commits `0463f08` and `c76f687` and the sections above
 are rewritten to match. Every claim in §4.7, §2.2 and §5 was re-measured
 after the fix, and the suites below were rerun.
 
-### 7.4 Final pass over the finished tree
+### 7.4 Second post-review pass (2026-09-14)
+
+Commit `d01066d`. Clean rebuild (`cargo clean -p shardpdf-core`, binding
+deleted and rebuilt), HEAD verified end to end:
+
+| Check | Reported |
+| --- | --- |
+| lint, typecheck, `cargo fmt --check`, clippy `-D warnings` | clean |
+| `cargo test --workspace`; `--no-default-features` | 27 pass; 27 pass |
+| Core JS suite | Node 24.15: 12/12; Bun 1.3.14: 12/12 |
+| Orchestrator suite, qpdf 12.4.1 present | 31 pass, 1 skip (soak gate); includes 9 manifest tests, concurrent-`generate()`, truncated-cache, and shared-cleanup regressions |
+| `SOAK=1`, external sampler | 1,000 pages 95 MB, 3,000 pages 97 MB |
+| Shared-cleanup repro (5 trials, long + short run on one cache, `keepCache` unset) | old: 5/5 `ENOENT`; new: 0/5 |
+| Outline shape probe, 14 invalid shapes | all `SHARDPDF_INVALID_ARG`, structural errors stay `SHARDPDF_MALFORMED`, `Assembly` still usable after rejection |
+| Bind benchmark, release build, 5 iterations | shardpdf merge 0.16 s / 91 MB, outline 0.16 s / 91 MB; qpdf 0.43 s / 203 MB and 1.34 s / 209 MB; all shardpdf checks pass, qpdf links fail 500/500 (see `docs/benchmarks`) |
+
+The Aug 7 bind numbers were from a **debug** binary (1.08 s); a debug build
+today gives 1.42 s and release gives 0.16 s, so the speedup is the
+optimizer, not the audit changes. Output bytes are identical before and
+after.
+
+### 7.5 Final pass over the finished tree (2026-09-13, superseded by 7.4)
 
 The checks in 7.1 and 7.2 were developed incrementally while fixes landed.
 After the last commit, the whole set was rerun once from a clean state
@@ -390,7 +452,7 @@ HEAD `23457e0`:
 
 Working tree clean after the pass; no probe files remain.
 
-### 7.5 Suite results
+### 7.6 Suite results (2026-09-13, superseded by 7.4)
 
 
 | Check | Result |
@@ -418,9 +480,8 @@ skips after qpdf was installed; that is fixed (§6.3).
 
 ## Suggested next steps, in order
 
-1. Rerun the bind benchmark once against the fixed core to refresh
-   `docs/benchmarks` (soak already reran: unchanged).
+1. ~~Rerun the bind benchmark~~ Done 2026-09-14 with a release build; see 7.4.
 2. Decide whether `max_decompressed_size` should be an `Assembly` constructor
    option now or wait for an untrusted-input use case.
-3. Cross-process manifest locking if two *processes* ever share a cache dir
-   (4.7); today a race costs one redundant re-render.
+3. Cross-process cache coordination (lock file or lease) if two *processes*
+   ever share a cache dir; see 4.9 for exactly what can go wrong today.
