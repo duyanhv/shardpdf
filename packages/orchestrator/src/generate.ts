@@ -1,3 +1,4 @@
+import { rm } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { assemble } from "@shardpdf/core";
@@ -149,14 +150,26 @@ export async function generate<TData>(
         if (cachedRender !== undefined) {
           file = cachedRender.file;
         } else {
-          file = cache.renderPath(key);
-          await pool.run({
-            kind: "render",
-            adapter,
-            shard: shard as Shard,
-            ctx: { ...ctx, outputPath: file },
-          });
-          await cache.putRender(key, measures[shard.index]?.pageCount ?? 0);
+          // Render into a unique temp file and promote it only when the
+          // worker has finished: a crash mid-render leaves no half-written
+          // shard at the cache path for a resumed run to trip over, and two
+          // runs rendering the same key never write to the same file.
+          const tempFile = cache.renderTempPath(key);
+          try {
+            await pool.run({
+              kind: "render",
+              adapter,
+              shard: shard as Shard,
+              ctx: { ...ctx, outputPath: tempFile },
+            });
+            file = await cache.commitRender(
+              key,
+              tempFile,
+              measures[shard.index]?.pageCount ?? 0,
+            );
+          } finally {
+            await rm(tempFile, { force: true });
+          }
           renderedFresh++;
         }
         rendered++;

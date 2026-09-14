@@ -264,3 +264,61 @@ test("generate detaches from a long-lived signal when it finishes", async () => 
     "no abort listener leaked onto the caller's signal",
   );
 });
+
+test("two concurrent generate() calls sharing output and cache both succeed", async () => {
+  const outputPath = path.join(workDir, "concurrent.pdf");
+  const opts = {
+    outputPath,
+    keepCache: true,
+    concurrency: 2,
+    retries: 0,
+    maxPagesPerShard: 4,
+  };
+  for (let trial = 0; trial < 3; trial++) {
+    const results = await Promise.allSettled([
+      generate(testPlan(), opts),
+      generate(testPlan(), opts),
+    ]);
+    assert.deepEqual(
+      results.map((r) => r.status),
+      ["fulfilled", "fulfilled"],
+      `trial ${trial}: ${results
+        .filter((r) => r.status === "rejected")
+        .map((r) => (r as PromiseRejectedResult).reason.message)
+        .join("; ")}`,
+    );
+    assert.ok((await stat(outputPath)).size > 0);
+    if (await qpdfAvailable()) {
+      await execFileP("qpdf", ["--check", outputPath]);
+    }
+  }
+});
+
+test("a truncated cached shard from a crashed render is not reused", async () => {
+  const outputPath = path.join(workDir, "truncated.pdf");
+  const cacheDir = path.join(workDir, "truncated-cache");
+  await generate(testPlan(), {
+    outputPath,
+    cacheDir,
+    maxPagesPerShard: 4,
+    keepCache: true,
+  });
+  // Simulate a crash mid-render on a resume: the only files at renderPath()
+  // are complete ones (renders go through a temp file), so a half-written
+  // temp must be invisible to the next run.
+  const { readdir, writeFile } = await import("node:fs/promises");
+  const shards = (await readdir(cacheDir)).filter((f) =>
+    f.startsWith("shard-"),
+  );
+  assert.equal(shards.length, 3);
+  await writeFile(path.join(cacheDir, `${shards[0]}.1234-dead.tmp`), "%PDF-");
+  await rm(outputPath);
+  const second = await generate(testPlan(), {
+    outputPath,
+    cacheDir,
+    maxPagesPerShard: 4,
+    keepCache: true,
+  });
+  assert.equal(second.cachedShards, 3, "complete shards reused");
+  assert.ok((await stat(outputPath)).size > 0);
+});
