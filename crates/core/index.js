@@ -10,6 +10,7 @@ const nativeBinding = require("./native.js");
  * @property {{title: string, pageIndex: number, level?: number}[]} [outline]
  * @property {AbortSignal} [signal]
  * @property {(info: {index: number, path: string, pageCount: number, totalPages: number}) => void} [onShard]
+ * @property {number} [maxDecompressedBytes] Bound on per-stream inflation while parsing shards.
  */
 
 /**
@@ -30,7 +31,8 @@ async function assemble(input) {
   if (input === null || typeof input !== "object") {
     throw new TypeError("assemble input must be an object");
   }
-  const { shards, outputPath, outline, signal, onShard } = input;
+  const { shards, outputPath, outline, signal, onShard, maxDecompressedBytes } =
+    input;
   if (!Array.isArray(shards) || shards.length === 0) {
     throw new RangeError("assemble requires at least one shard");
   }
@@ -53,7 +55,10 @@ async function assemble(input) {
   let pageCount = 0;
 
   try {
-    assembly = new nativeBinding.Assembly(partialPath);
+    assembly = new nativeBinding.Assembly(
+      partialPath,
+      maxDecompressedBytes === undefined ? undefined : { maxDecompressedBytes },
+    );
     for (let index = 0; index < shards.length; index++) {
       signal?.throwIfAborted();
       const shardPages = assembly.appendShard(shards[index]);

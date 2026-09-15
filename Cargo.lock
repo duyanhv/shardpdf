@@ -853,6 +853,7 @@ dependencies = [
 name = "shardpdf-core"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "lopdf",
  "napi",
  "napi-build",

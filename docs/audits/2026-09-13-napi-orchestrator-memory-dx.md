@@ -23,7 +23,7 @@ that duplicated (and subtly diverged from) the core's assembly path.
 | napi boundary | 6 | 6 | 0 |
 | JS wrapper | 2 | 2 | 0 |
 | Orchestrator | 10 | 9 | 1 (cross-process coordination) |
-| Memory | 0 bugs, 1 measurement error corrected | n/a | 1 |
+| Memory | 1 (no decompression bound), 1 measurement error corrected | 1 | 0 |
 | Developer UX | 4 | 4 | 0 |
 
 ## 1. Rust core
@@ -303,12 +303,19 @@ a smaller multiplier because their bytes are mostly opaque blobs.
 3,000 pages 91 MB peak (71 and 120 samples). The invariant the spec promises
 holds when measured properly.
 
-**Decompression bombs.** lopdf 0.44 exposes
-`LoadOptions.max_decompressed_size` and the assembler does not set it. For
-the intended use (shards the host rendered itself) this is fine. If
-`extractPages` or `appendShard` ever take user-uploaded PDFs, a 1 MB shard
-with a 4 GB inflate is a trivial DoS. Recommend surfacing this as an option
-before that use case exists.
+**Decompression bombs (fixed 2026-09-15).** lopdf decodes object streams
+eagerly on load and the assembler set no bound. Measured: a 261 KB file
+whose `/ObjStm` inflates to 1 GB reached 883 MB resident in 190 ms before the
+assembler saw a page. `maxDecompressedBytes` is now an option on
+`Assembly`, `assemble()`, and `extractPages()`, plumbed to lopdf's
+`LoadOptions.max_decompressed_size`. With a 1 MB bound the same file is
+rejected in under a millisecond as `SHARDPDF_MALFORMED` ("shard has no
+pages": lopdf skips the over-budget stream rather than surfacing the limit
+error, so the code is not distinct). Regression tests in Rust and JS build
+the bomb by hand (lopdf's writer will not emit one) and assert both the
+rejection and that the unbounded load of the same file is a legal one-page
+document. The default stays unbounded: this only matters for untrusted
+input, and the README says when to set it.
 
 Timing (debug build, Apple Silicon):
 
@@ -481,7 +488,6 @@ skips after qpdf was installed; that is fixed (§6.3).
 ## Suggested next steps, in order
 
 1. ~~Rerun the bind benchmark~~ Done 2026-09-14 with a release build; see 7.4.
-2. Decide whether `max_decompressed_size` should be an `Assembly` constructor
-   option now or wait for an untrusted-input use case.
+2. ~~`max_decompressed_size` option~~ Done 2026-09-15 as `maxDecompressedBytes`.
 3. Cross-process cache coordination (lock file or lease) if two *processes*
    ever share a cache dir; see 4.9 for exactly what can go wrong today.

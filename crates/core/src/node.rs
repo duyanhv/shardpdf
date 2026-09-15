@@ -13,6 +13,7 @@
 //! shard blocks the event loop for tens of milliseconds; callers that need
 //! liveness should yield between appends (the `assemble()` wrapper does).
 
+use crate::assembler::ShardLoadOptions;
 use crate::{assembler, extract, outline};
 use napi::bindgen_prelude::{FromNapiValue, JsObjectValue, JsValue, Object, Unknown};
 use napi::ValueType;
@@ -233,6 +234,63 @@ fn outline_arg(value: Option<Unknown>) -> Result<Option<Vec<outline::OutlineEntr
     Ok(Some(entries))
 }
 
+/// Optional resource limits for parsing shards.
+///
+/// `maxDecompressedBytes` bounds how far any one compressed stream may
+/// inflate while a shard is parsed. Shards you rendered yourself do not
+/// need it; set it whenever a path or upload from outside your process can
+/// reach `appendShard` or `extractPages`, because a 250 KB file can
+/// otherwise allocate gigabytes before the core sees a single page. An
+/// over-budget object stream is skipped by the parser, so the shard then
+/// fails as `SHARDPDF_MALFORMED` (typically "shard has no pages") or, if
+/// only a content stream was oversized, `SHARDPDF_PDF_PARSE`.
+#[napi(object)]
+#[derive(Default)]
+pub struct LoadOptions {
+    pub max_decompressed_bytes: Option<u32>,
+}
+
+fn load_options_arg(value: Option<Unknown>) -> Result<ShardLoadOptions> {
+    let Some(value) = value else {
+        return Ok(ShardLoadOptions::default());
+    };
+    match value.get_type() {
+        Ok(ValueType::Undefined) | Ok(ValueType::Null) => return Ok(ShardLoadOptions::default()),
+        Ok(ValueType::Object) => {}
+        _ => {
+            return Err(bad_arg(format!(
+                "options must be an object, got {}",
+                type_name(&value)
+            )))
+        }
+    }
+    let object = Object::from_unknown(value).map_err(|e| bad_arg(e.reason))?;
+    let raw: Unknown = object
+        .get_named_property_unchecked("maxDecompressedBytes")
+        .map_err(|e| bad_arg(format!("options.maxDecompressedBytes: {}", e.reason)))?;
+    let max_decompressed_bytes = match raw.get_type() {
+        Ok(ValueType::Undefined) | Ok(ValueType::Null) => None,
+        Ok(ValueType::Number) => {
+            let n = f64::from_unknown(raw).map_err(|e| bad_arg(e.reason))?;
+            if !n.is_finite() || n.fract() != 0.0 || n < 1.0 || n > usize::MAX as f64 {
+                return Err(bad_arg(format!(
+                    "options.maxDecompressedBytes must be a positive integer, got {n}"
+                )));
+            }
+            Some(n as usize)
+        }
+        _ => {
+            return Err(bad_arg(format!(
+                "options.maxDecompressedBytes must be a positive integer, got {}",
+                type_name(&raw)
+            )))
+        }
+    };
+    Ok(ShardLoadOptions {
+        max_decompressed_bytes,
+    })
+}
+
 /// Extract an inclusive, 1-based page range from `inputPath` into
 /// `outputPath`, copying only objects the selected pages reach. Returns the
 /// extracted page count. v1 drops link annotations, named destinations, and
@@ -240,23 +298,26 @@ fn outline_arg(value: Option<Unknown>) -> Result<Option<Vec<outline::OutlineEntr
 /// bookmarks, and keeps links only as silently-dangling targets.
 #[napi(
     catch_unwind,
-    ts_args_type = "inputPath: string, startPage: number, endPage: number, outputPath: string"
+    ts_args_type = "inputPath: string, startPage: number, endPage: number, outputPath: string, options?: LoadOptions | undefined | null"
 )]
 pub fn extract_pages(
     input_path: Unknown,
     start_page: Unknown,
     end_page: Unknown,
     output_path: Unknown,
+    options: Option<Unknown>,
 ) -> Result<u32> {
     let input_path = path_arg(input_path, "inputPath")?;
     let start_page = page_number(start_page, "startPage")?;
     let end_page = page_number(end_page, "endPage")?;
     let output_path = path_arg(output_path, "outputPath")?;
-    extract::extract_pages(
+    let load_options = load_options_arg(options)?;
+    extract::extract_pages_with_options(
         std::path::Path::new(&input_path),
         start_page,
         end_page,
         std::path::Path::new(&output_path),
+        &load_options,
     )
     .map_err(to_napi_err)
 }
@@ -279,11 +340,19 @@ pub struct Assembly {
 
 #[napi]
 impl Assembly {
-    #[napi(constructor, catch_unwind, ts_args_type = "outputPath: string")]
-    pub fn new(output_path: Unknown) -> Result<Self> {
+    #[napi(
+        constructor,
+        catch_unwind,
+        ts_args_type = "outputPath: string, options?: LoadOptions | undefined | null"
+    )]
+    pub fn new(output_path: Unknown, options: Option<Unknown>) -> Result<Self> {
         let output_path = path_arg(output_path, "outputPath")?;
+        let load_options = load_options_arg(options)?;
         Ok(Assembly {
-            inner: Some(assembler::Assembly::new(output_path).map_err(to_napi_err)?),
+            inner: Some(
+                assembler::Assembly::with_options(output_path, load_options)
+                    .map_err(to_napi_err)?,
+            ),
         })
     }
 

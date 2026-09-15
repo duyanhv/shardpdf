@@ -32,6 +32,21 @@ All native calls are synchronous and run on the JavaScript thread. Appending a
 500-page PDFKit shard blocks the event loop for roughly 50 ms in a debug build;
 `assemble()` yields between shards so timers and abort handlers stay live.
 
+### Untrusted input
+
+Shards you rendered yourself need no limits. If a path or upload from outside
+your process can reach `assemble()`, `appendShard()`, or `extractPages()`,
+pass `maxDecompressedBytes`: the parser inflates object streams eagerly on
+load, and a 250 KB file can otherwise allocate gigabytes before the core sees
+a page (measured: 261 KB on disk, 883 MB resident). With a bound the
+oversized stream is skipped and the shard fails as `SHARDPDF_MALFORMED`.
+
+```ts
+await assemble({ shards, outputPath, maxDecompressedBytes: 64 * 1024 * 1024 });
+new Assembly(partialPath, { maxDecompressedBytes: 64 * 1024 * 1024 });
+extractPages(input, 1, 10, output, { maxDecompressedBytes: 64 * 1024 * 1024 });
+```
+
 `buildInfo()` returns `{ profile: "release" | "debug", version }` for the
 loaded binding. The benchmark harness refuses to record a debug build without
 `--allow-debug`; check it whenever a timing looks off.

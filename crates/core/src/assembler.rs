@@ -16,7 +16,7 @@
 
 use crate::outline::{build_outline_objects, OutlineEntry};
 use crate::serializer::write_indirect_object;
-use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, StringFormat};
+use lopdf::{dictionary, Dictionary, Document, LoadOptions, Object, ObjectId, StringFormat};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
@@ -96,8 +96,34 @@ impl Write for CountingWriter {
     }
 }
 
+/// Options for parsing shards. Defaults are lenient and unbounded, which is
+/// right for shards the caller rendered itself.
+#[derive(Debug, Clone, Default)]
+pub struct ShardLoadOptions {
+    /// Upper bound on how many bytes any one compressed stream in a shard
+    /// may inflate to while the shard is parsed. lopdf decodes object and
+    /// xref streams eagerly on load, so without a bound a sub-kilobyte file
+    /// can allocate gigabytes before this crate sees it. `None` = no limit.
+    pub max_decompressed_bytes: Option<usize>,
+}
+
+impl ShardLoadOptions {
+    fn to_lopdf(&self) -> LoadOptions {
+        LoadOptions {
+            max_decompressed_size: self.max_decompressed_bytes,
+            ..LoadOptions::default()
+        }
+    }
+}
+
+/// Loads a PDF from disk with the given shard options.
+pub fn load_document(path: &Path, options: &ShardLoadOptions) -> Result<Document> {
+    Ok(Document::load_with_options(path, options.to_lopdf())?)
+}
+
 pub struct Assembly {
     output_path: PathBuf,
+    load_options: ShardLoadOptions,
     writer: CountingWriter,
     /// object number -> byte offset of its `n g obj` header
     offsets: BTreeMap<u32, u64>,
@@ -108,12 +134,20 @@ pub struct Assembly {
 
 impl Assembly {
     pub fn new(output_path: impl Into<PathBuf>) -> Result<Self> {
+        Self::with_options(output_path, ShardLoadOptions::default())
+    }
+
+    pub fn with_options(
+        output_path: impl Into<PathBuf>,
+        load_options: ShardLoadOptions,
+    ) -> Result<Self> {
         let output_path = output_path.into();
         let mut writer = CountingWriter::new(File::create(&output_path)?);
         // Header + high-bit comment marking the file as binary (spec §7.5.2).
         writer.write_all(b"%PDF-1.7\n%\xB5\xB5\xB5\xB5\n")?;
         Ok(Assembly {
             output_path,
+            load_options,
             writer,
             offsets: BTreeMap::new(),
             page_ids: Vec::new(),
@@ -127,7 +161,7 @@ impl Assembly {
     }
 
     pub fn append_shard_file(&mut self, path: &Path) -> Result<u32> {
-        let shard = Document::load(path)?;
+        let shard = load_document(path, &self.load_options)?;
         self.append_shard_doc(shard)
     }
 
@@ -859,6 +893,110 @@ mod tests {
         let merged = Document::load_mem(&bytes).unwrap();
         let pages: Vec<ObjectId> = merged.get_pages().into_values().collect();
         assert!(page_text(&merged, pages[0]).contains("gen-p0"));
+    }
+
+    /// A ~250 KB shard whose /ObjStm (holding the catalog, pages, and page)
+    /// inflates to `inflated_bytes`. lopdf decodes object streams eagerly on
+    /// load, so without a bound this allocates the whole payload before the
+    /// assembler sees a page. Hand-built because lopdf's writer will not
+    /// emit an object stream with a whitespace tail.
+    fn bomb_shard(inflated_bytes: usize) -> Vec<u8> {
+        use std::io::Write;
+        let objs: [&[u8]; 3] = [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+        ];
+        let mut inner = Vec::new();
+        let mut header = String::new();
+        for (i, o) in objs.iter().enumerate() {
+            header.push_str(&format!("{} {} ", i + 1, inner.len()));
+            inner.extend_from_slice(o);
+            inner.push(b'\n');
+        }
+        inner.extend(std::iter::repeat_n(b' ', inflated_bytes));
+        let first = header.len();
+        let mut payload = header.into_bytes();
+        payload.extend_from_slice(&inner);
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        enc.write_all(&payload).unwrap();
+        let packed = enc.finish().unwrap();
+
+        let mut pdf = b"%PDF-1.5\n".to_vec();
+        let objstm_off = pdf.len();
+        pdf.extend_from_slice(
+            format!(
+                "4 0 obj\n<< /Type /ObjStm /N 3 /First {first} /Filter /FlateDecode /Length {} >>\nstream\n",
+                packed.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(&packed);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        let xref_off = pdf.len();
+        let row = |t: u8, f2: u32, f3: u16| {
+            let mut r = vec![t];
+            r.extend_from_slice(&f2.to_be_bytes());
+            r.extend_from_slice(&f3.to_be_bytes());
+            r
+        };
+        let mut rows = row(0, 0, 65535);
+        for i in 0..3u16 {
+            rows.extend(row(2, 4, i));
+        }
+        rows.extend(row(1, objstm_off as u32, 0));
+        rows.extend(row(1, xref_off as u32, 0));
+        pdf.extend_from_slice(
+            format!(
+                "5 0 obj\n<< /Type /XRef /Size 6 /W [1 4 2] /Root 1 0 R /Length {} >>\nstream\n",
+                rows.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(&rows);
+        pdf.extend_from_slice(
+            format!("\nendstream\nendobj\nstartxref\n{xref_off}\n%%EOF\n").as_bytes(),
+        );
+        assert!(pdf.len() < 512 * 1024, "bomb must be small on disk");
+        pdf
+    }
+
+    /// With a limit, lopdf skips the over-budget object stream (it does not
+    /// surface the error), so the shard arrives with no pages and the
+    /// assembler rejects it as malformed. The important property is that
+    /// the payload is never allocated; the unbounded load is the control.
+    #[test]
+    fn decompression_limit_rejects_a_zip_bomb_before_it_inflates() {
+        let bytes = bomb_shard(32 * 1024 * 1024);
+        let path = std::env::temp_dir().join("shardpdf-core-test-bomb.pdf");
+        std::fs::write(&path, &bytes).unwrap();
+        let out = std::env::temp_dir().join("shardpdf-core-test-bomb-out.pdf");
+
+        let mut bounded = Assembly::with_options(
+            &out,
+            ShardLoadOptions {
+                max_decompressed_bytes: Some(1024 * 1024),
+            },
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let result = bounded.append_shard_file(&path);
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(result, Err(AssemblyError::Malformed(ref m)) if m.contains("no pages")),
+            "expected rejection, got {result:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "bounded load took {elapsed:?}; the payload was inflated"
+        );
+
+        // Control: same shard, no limit, is a legal one-page document.
+        let mut unbounded = Assembly::new(&out).unwrap();
+        assert_eq!(unbounded.append_shard_file(&path).unwrap(), 1);
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&out).ok();
     }
 
     /// Modern producers pack objects into /ObjStm containers and use xref

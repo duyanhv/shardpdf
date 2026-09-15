@@ -11,7 +11,7 @@
 //! - Working set is O(source parse + extracted objects), not O(one shard):
 //!   extraction reads an existing document, it does not stream shards.
 
-use crate::assembler::{Assembly, AssemblyError, Result};
+use crate::assembler::{load_document, Assembly, AssemblyError, Result, ShardLoadOptions};
 use lopdf::{dictionary, Document, Object, ObjectId};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
@@ -22,13 +22,29 @@ pub fn extract_pages(
     end_page: u32,
     output_path: &Path,
 ) -> Result<u32> {
+    extract_pages_with_options(
+        input_path,
+        start_page,
+        end_page,
+        output_path,
+        &ShardLoadOptions::default(),
+    )
+}
+
+pub fn extract_pages_with_options(
+    input_path: &Path,
+    start_page: u32,
+    end_page: u32,
+    output_path: &Path,
+    load_options: &ShardLoadOptions,
+) -> Result<u32> {
     if start_page < 1 || start_page > end_page {
         return Err(AssemblyError::Malformed(format!(
             "invalid page range {start_page}-{end_page} (1-based, inclusive)"
         )));
     }
 
-    let mut source = Document::load(input_path)?;
+    let mut source = load_document(input_path, load_options)?;
     let all_pages: Vec<ObjectId> = source.get_pages().into_values().collect();
     let total = all_pages.len() as u32;
     if end_page > total {

@@ -1,4 +1,4 @@
-export type { BuildInfo, OutlineEntry } from "./native.js";
+export type { BuildInfo, LoadOptions, OutlineEntry } from "./native.js";
 export { Assembly, buildInfo, extractPages } from "./native.js";
 
 /**
@@ -52,6 +52,12 @@ export interface AssembleOptions {
    * removes the partial output.
    */
   onShard?: (info: AssembleShardInfo) => void;
+  /**
+   * Bound on how far any one compressed stream may inflate while a shard is
+   * parsed. Unneeded for shards you rendered yourself; set it when untrusted
+   * files can reach this call. See `LoadOptions`.
+   */
+  maxDecompressedBytes?: number;
 }
 
 export interface AssembleResult {

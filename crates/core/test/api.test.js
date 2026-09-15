@@ -291,6 +291,70 @@ test("finalize validates the outline shape and reports SHARDPDF_INVALID_ARG", ()
   assert.equal(ok.consumed, true);
 });
 
+test("maxDecompressedBytes bounds shard parsing (zip bomb)", async () => {
+  // A ~250 KB file whose object stream inflates to 32 MB. Built the same way
+  // as the Rust test; see assembler.rs bomb_shard for the layout.
+  const bombPath = path.join(workDir, "bomb.pdf");
+  await writeFile(bombPath, buildBombPdf(32 * 1024 * 1024));
+  assert.ok((await stat(bombPath)).size < 512 * 1024);
+
+  // Unbounded: a legal one-page document.
+  const unboundedOut = path.join(workDir, "bomb-unbounded.pdf");
+  const unbounded = await assemble({
+    shards: [bombPath],
+    outputPath: unboundedOut,
+  });
+  assert.equal(unbounded.pageCount, 1);
+
+  // Bounded: the oversized object stream is skipped, shard has no pages.
+  const started = performance.now();
+  await assert.rejects(
+    assemble({
+      shards: [bombPath],
+      outputPath: path.join(workDir, "bomb-bounded.pdf"),
+      maxDecompressedBytes: 1024 * 1024,
+    }),
+    { code: "SHARDPDF_MALFORMED" },
+  );
+  assert.ok(performance.now() - started < 200, "bounded load did not inflate");
+
+  // Same on the low-level class and on extractPages.
+  const low = new Assembly(path.join(workDir, "bomb-low.partial"), {
+    maxDecompressedBytes: 1024 * 1024,
+  });
+  try {
+    assert.throws(() => low.appendShard(bombPath), {
+      code: "SHARDPDF_MALFORMED",
+    });
+  } finally {
+    low.abort();
+  }
+  assert.throws(
+    () =>
+      extractPages(bombPath, 1, 1, path.join(workDir, "bomb-x.pdf"), {
+        maxDecompressedBytes: 1024 * 1024,
+      }),
+    { code: "SHARDPDF_MALFORMED" },
+  );
+
+  // Option validation.
+  for (const bad of [0, -1, 1.5, "1", {}]) {
+    assert.throws(
+      () =>
+        new Assembly(
+          path.join(workDir, "opt.partial"),
+          asAny({ maxDecompressedBytes: bad }),
+        ),
+      { code: "SHARDPDF_INVALID_ARG" },
+      `maxDecompressedBytes=${String(bad)}`,
+    );
+  }
+  assert.throws(
+    () => new Assembly(path.join(workDir, "opt.partial"), asAny("nope")),
+    { code: "SHARDPDF_INVALID_ARG" },
+  );
+});
+
 test("low-level abort is idempotent and consumes the assembly", async () => {
   const partialPath = path.join(workDir, "low-level.partial");
   const assembly = new Assembly(partialPath);
@@ -313,6 +377,71 @@ test("low-level abort is idempotent and consumes the assembly", async () => {
  */
 function asAny(value) {
   return value;
+}
+
+/**
+ * A PDF whose /ObjStm holds the catalog, pages, and page followed by
+ * `inflatedBytes` of whitespace, referenced from an xref stream.
+ * @param {number} inflatedBytes
+ */
+function buildBombPdf(inflatedBytes) {
+  const { deflateSync } = require("node:zlib");
+  const objs = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+  ];
+  let header = "";
+  const inner = [];
+  let innerLen = 0;
+  objs.forEach((o, i) => {
+    header += `${i + 1} ${innerLen} `;
+    const b = Buffer.from(`${o}\n`, "latin1");
+    inner.push(b);
+    innerLen += b.length;
+  });
+  inner.push(Buffer.alloc(inflatedBytes, 0x20));
+  const payload = Buffer.concat([Buffer.from(header, "latin1"), ...inner]);
+  const packed = deflateSync(payload, { level: 9 });
+  const parts = [Buffer.from("%PDF-1.5\n", "latin1")];
+  let len = parts[0].length;
+  const objstmOff = len;
+  const objstmHead = Buffer.from(
+    `4 0 obj\n<< /Type /ObjStm /N 3 /First ${header.length} /Filter /FlateDecode /Length ${packed.length} >>\nstream\n`,
+    "latin1",
+  );
+  const objstmTail = Buffer.from("\nendstream\nendobj\n", "latin1");
+  parts.push(objstmHead, packed, objstmTail);
+  len += objstmHead.length + packed.length + objstmTail.length;
+  const xrefOff = len;
+  /** @param {number} t @param {number} f2 @param {number} f3 */
+  const row = (t, f2, f3) => {
+    const b = Buffer.alloc(7);
+    b[0] = t;
+    b.writeUInt32BE(f2, 1);
+    b.writeUInt16BE(f3, 5);
+    return b;
+  };
+  const rows = Buffer.concat([
+    row(0, 0, 65535),
+    row(2, 4, 0),
+    row(2, 4, 1),
+    row(2, 4, 2),
+    row(1, objstmOff, 0),
+    row(1, xrefOff, 0),
+  ]);
+  parts.push(
+    Buffer.from(
+      `5 0 obj\n<< /Type /XRef /Size 6 /W [1 4 2] /Root 1 0 R /Length ${rows.length} >>\nstream\n`,
+      "latin1",
+    ),
+    rows,
+    Buffer.from(
+      `\nendstream\nendobj\nstartxref\n${xrefOff}\n%%EOF\n`,
+      "latin1",
+    ),
+  );
+  return Buffer.concat(parts);
 }
 
 /** @param {string} outputPath */
