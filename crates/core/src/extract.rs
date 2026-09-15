@@ -12,7 +12,9 @@
 //! - Working set is O(source parse + extracted objects), not O(one shard):
 //!   extraction reads an existing document, it does not stream shards.
 
-use crate::assembler::{load_document, Assembly, AssemblyError, Result, ShardLoadOptions};
+use crate::assembler::{
+    load_document, load_source, Assembly, AssemblyError, PdfSource, Result, ShardLoadOptions,
+};
 use lopdf::{dictionary, Document, Object, ObjectId};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
@@ -32,6 +34,9 @@ pub fn extract_pages(
     )
 }
 
+/// Inclusive, 1-based range form. Range errors are `Malformed` (the
+/// original contract for this entry point); the work is shared with
+/// [`extract_selection`].
 pub fn extract_pages_with_options(
     input_path: &Path,
     start_page: u32,
@@ -45,16 +50,67 @@ pub fn extract_pages_with_options(
         )));
     }
 
-    let mut source = load_document(input_path, load_options)?;
-    let all_pages: Vec<ObjectId> = source.get_pages().into_values().collect();
-    let total = all_pages.len() as u32;
+    let source = load_document(input_path, load_options)?;
+    let total = source.get_pages().len() as u32;
     if end_page > total {
         return Err(AssemblyError::Malformed(format!(
             "page range {start_page}-{end_page} exceeds document length {total}"
         )));
     }
-    let selected: Vec<ObjectId> =
-        all_pages[(start_page as usize - 1)..(end_page as usize)].to_vec();
+    let indices: Vec<usize> = ((start_page as usize - 1)..(end_page as usize)).collect();
+    extract_selection_from_doc(source, &indices, output_path)
+}
+
+/// Extracts `pages` (zero-based indices, emitted in the given order) from
+/// `source` into a new PDF at `output_path`. The source is parsed exactly
+/// once. Returns the extracted page count.
+///
+/// Selection errors are [`AssemblyError::InvalidSelection`]: empty
+/// selection, duplicate index, or an index `>= page count`.
+pub fn extract_selection(
+    source: PdfSource<'_>,
+    pages: &[usize],
+    output_path: &Path,
+    load_options: &ShardLoadOptions,
+) -> Result<u32> {
+    if pages.is_empty() {
+        return Err(AssemblyError::InvalidSelection(
+            "pages must contain at least one index".into(),
+        ));
+    }
+    let doc = load_source(source, load_options)?;
+    extract_selection_from_doc(doc, pages, output_path)
+}
+
+/// Shared core: validates `pages` against the parsed document, copies the
+/// reachable object graph for the selected pages, and writes the result.
+fn extract_selection_from_doc(
+    mut source: Document,
+    pages: &[usize],
+    output_path: &Path,
+) -> Result<u32> {
+    if pages.is_empty() {
+        return Err(AssemblyError::InvalidSelection(
+            "pages must contain at least one index".into(),
+        ));
+    }
+    let all_pages: Vec<ObjectId> = source.get_pages().into_values().collect();
+    let total = all_pages.len();
+    let mut seen = BTreeSet::new();
+    let mut selected: Vec<ObjectId> = Vec::with_capacity(pages.len());
+    for (position, &index) in pages.iter().enumerate() {
+        if index >= total {
+            return Err(AssemblyError::InvalidSelection(format!(
+                "pages[{position}] = {index} is out of range for a {total}-page document (zero-based)"
+            )));
+        }
+        if !seen.insert(index) {
+            return Err(AssemblyError::InvalidSelection(format!(
+                "pages[{position}] = {index} is a duplicate"
+            )));
+        }
+        selected.push(all_pages[index]);
+    }
 
     // Selected pages must be self-contained before their parent chain and
     // sibling pages are cut away.
@@ -237,5 +293,138 @@ mod tests {
         std::fs::remove_file(&source).ok();
         assert_eq!(count, 4);
         assert_eq!(doc.get_pages().len(), 4);
+    }
+
+    fn select_to(
+        source: PdfSource<'_>,
+        pages: &[usize],
+        name: &str,
+    ) -> Result<(u32, Document, Vec<u8>)> {
+        let out = std::env::temp_dir().join(format!("shardpdf-extract-sel-{name}.pdf"));
+        let count = extract_selection(source, pages, &out, &ShardLoadOptions::default())?;
+        let bytes = std::fs::read(&out)?;
+        let doc = Document::load(&out)?;
+        std::fs::remove_file(&out).ok();
+        Ok((count, doc, bytes))
+    }
+
+    fn page_texts(doc: &Document) -> Vec<String> {
+        doc.get_pages()
+            .into_values()
+            .map(|id| page_text(doc, id))
+            .collect()
+    }
+
+    #[test]
+    fn selection_preserves_requested_order() {
+        let source = write_source(5, "sel-order");
+        let (count, doc, _) = select_to(PdfSource::Path(&source), &[3, 0, 4], "order").unwrap();
+        std::fs::remove_file(&source).ok();
+        assert_eq!(count, 3);
+        let texts = page_texts(&doc);
+        assert_eq!(texts.len(), 3);
+        for (text, want) in texts.iter().zip(["src-p3", "src-p0", "src-p4"]) {
+            assert!(text.contains(want), "expected {want}, got {text:?}");
+        }
+    }
+
+    #[test]
+    fn selection_rejects_duplicates() {
+        let source = write_source(3, "sel-dup");
+        let result = select_to(PdfSource::Path(&source), &[1, 1], "dup");
+        std::fs::remove_file(&source).ok();
+        assert!(
+            matches!(result, Err(AssemblyError::InvalidSelection(ref m)) if m.contains("duplicate")),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn selection_rejects_empty() {
+        let source = write_source(3, "sel-empty");
+        let result = select_to(PdfSource::Path(&source), &[], "empty");
+        std::fs::remove_file(&source).ok();
+        assert!(matches!(result, Err(AssemblyError::InvalidSelection(_))));
+    }
+
+    #[test]
+    fn selection_single_page() {
+        let source = write_source(4, "sel-single");
+        let (count, doc, _) = select_to(PdfSource::Path(&source), &[1], "single").unwrap();
+        std::fs::remove_file(&source).ok();
+        assert_eq!(count, 1);
+        let texts = page_texts(&doc);
+        assert_eq!(texts.len(), 1);
+        assert!(texts[0].contains("src-p1"));
+    }
+
+    #[test]
+    fn selection_last_page() {
+        let source = write_source(4, "sel-last");
+        let (count, doc, _) = select_to(PdfSource::Path(&source), &[3], "last").unwrap();
+        std::fs::remove_file(&source).ok();
+        assert_eq!(count, 1);
+        assert!(page_texts(&doc)[0].contains("src-p3"));
+    }
+
+    #[test]
+    fn selection_rejects_out_of_range() {
+        let source = write_source(4, "sel-oor");
+        let result = select_to(PdfSource::Path(&source), &[0, 4], "oor");
+        std::fs::remove_file(&source).ok();
+        assert!(
+            matches!(result, Err(AssemblyError::InvalidSelection(ref m)) if m.contains("out of range")),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn selection_bytes_and_path_are_equivalent() {
+        let source = write_source(5, "sel-bytes");
+        let bytes = std::fs::read(&source).unwrap();
+        let (count_a, _, out_a) = select_to(PdfSource::Path(&source), &[4, 2], "bytes-a").unwrap();
+        let (count_b, _, out_b) = select_to(PdfSource::Bytes(&bytes), &[4, 2], "bytes-b").unwrap();
+        std::fs::remove_file(&source).ok();
+        assert_eq!(count_a, 2);
+        assert_eq!(count_a, count_b);
+        assert_eq!(
+            out_a, out_b,
+            "path and bytes extraction must produce identical output"
+        );
+    }
+
+    #[test]
+    fn selection_matches_range_extraction() {
+        let source = write_source(5, "sel-range");
+        let (_, _, ranged) = {
+            let out = std::env::temp_dir().join("shardpdf-extract-sel-range-ref.pdf");
+            let count = extract_pages(&source, 2, 4, &out).unwrap();
+            let bytes = std::fs::read(&out).unwrap();
+            std::fs::remove_file(&out).ok();
+            (count, (), bytes)
+        };
+        let (_, _, selected) = select_to(PdfSource::Path(&source), &[1, 2, 3], "range").unwrap();
+        std::fs::remove_file(&source).ok();
+        assert_eq!(ranged, selected);
+    }
+
+    #[test]
+    fn page_count_reads_without_writing() {
+        let source = write_source(7, "count");
+        let bytes = std::fs::read(&source).unwrap();
+        let opts = ShardLoadOptions::default();
+        assert_eq!(
+            crate::assembler::page_count(PdfSource::Path(&source), &opts).unwrap(),
+            7
+        );
+        assert_eq!(
+            crate::assembler::page_count(PdfSource::Bytes(&bytes), &opts).unwrap(),
+            7
+        );
+        std::fs::remove_file(&source).ok();
+        assert!(matches!(
+            crate::assembler::page_count(PdfSource::Bytes(b"not a pdf"), &opts),
+            Err(AssemblyError::Pdf(_))
+        ));
     }
 }

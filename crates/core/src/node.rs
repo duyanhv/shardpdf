@@ -1,8 +1,11 @@
 //! napi bindings (feature `node`). All orchestration lives in TypeScript;
 //! this file only marshals across the boundary.
 //!
-//! Every binding is `catch_unwind`: an unwinding panic anywhere in the core
-//! surfaces as a JavaScript exception instead of aborting the host process.
+//! Every binding body runs under [`guard`], a `catch_unwind` that maps an
+//! unwinding panic anywhere in the core to a `SHARDPDF_PANIC` error instead
+//! of aborting the host process. napi's own `catch_unwind` attribute is kept
+//! as an outer layer (it also covers napi's argument marshalling) but it
+//! produces a code-less `GenericFailure`, so the coded mapping lives here.
 //! Process-aborting failures (stack overflow, allocator OOM abort,
 //! `process::abort`) are outside what `catch_unwind` can intercept.
 //!
@@ -13,11 +16,12 @@
 //! shard blocks the event loop for tens of milliseconds; callers that need
 //! liveness should yield between appends (the `assemble()` wrapper does).
 
-use crate::assembler::ShardLoadOptions;
+use crate::assembler::{PdfSource, ShardLoadOptions};
 use crate::{assembler, extract, outline};
-use napi::bindgen_prelude::{FromNapiValue, JsObjectValue, JsValue, Object, Unknown};
+use napi::bindgen_prelude::{FromNapiValue, JsObjectValue, JsValue, Object, Uint8Array, Unknown};
 use napi::ValueType;
 use napi_derive::napi;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// Stable error codes exposed as `error.code` on the JavaScript side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +38,10 @@ pub enum ErrorCode {
     Consumed,
     /// A JavaScript argument was out of range or of the wrong shape.
     InvalidArg,
+    /// The native core panicked (a bug in shardpdf, not in the input). The
+    /// panic was caught at the binding boundary; the process is intact but
+    /// any in-progress `Assembly` should be aborted.
+    Panic,
 }
 
 impl AsRef<str> for ErrorCode {
@@ -44,11 +52,35 @@ impl AsRef<str> for ErrorCode {
             ErrorCode::Malformed => "SHARDPDF_MALFORMED",
             ErrorCode::Consumed => "SHARDPDF_CONSUMED",
             ErrorCode::InvalidArg => "SHARDPDF_INVALID_ARG",
+            ErrorCode::Panic => "SHARDPDF_PANIC",
         }
     }
 }
 
 type Result<T> = napi::Result<T, ErrorCode>;
+
+/// Runs a binding body, converting an unwinding panic into a coded error.
+/// `AssertUnwindSafe` is sound here because every binding either returns a
+/// value or leaves state that the caller must discard (`Assembly` is meant
+/// to be aborted after any error).
+fn guard<T>(body: impl FnOnce() -> Result<T>) -> Result<T> {
+    match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else {
+                "panic from Rust code".to_string()
+            };
+            Err(napi::Error::new(
+                ErrorCode::Panic,
+                format!("native panic: {message}"),
+            ))
+        }
+    }
+}
 
 /// Build information for the loaded native module. Benchmarks record this
 /// so a debug binary can never be mistaken for a release measurement.
@@ -77,6 +109,7 @@ fn to_napi_err(e: assembler::AssemblyError) -> napi::Error<ErrorCode> {
         assembler::AssemblyError::Pdf(_) => ErrorCode::PdfParse,
         assembler::AssemblyError::Io(_) => ErrorCode::Io,
         assembler::AssemblyError::Malformed(_) => ErrorCode::Malformed,
+        assembler::AssemblyError::InvalidSelection(_) => ErrorCode::InvalidArg,
     };
     napi::Error::new(code, e.to_string())
 }
@@ -116,6 +149,86 @@ fn path_arg(value: Unknown, name: &str) -> Result<String> {
         ));
     }
     Ok(s)
+}
+
+/// A PDF source: a non-empty path string or a `Uint8Array` (Buffer works
+/// through inheritance). Any other shape is `SHARDPDF_INVALID_ARG`.
+enum InputArg {
+    Path(String),
+    Bytes(Uint8Array),
+}
+
+impl InputArg {
+    fn as_source(&self) -> PdfSource<'_> {
+        match self {
+            InputArg::Path(p) => PdfSource::Path(std::path::Path::new(p)),
+            InputArg::Bytes(b) => PdfSource::Bytes(b.as_ref()),
+        }
+    }
+}
+
+fn input_arg(value: Unknown, name: &str) -> Result<InputArg> {
+    match value.get_type() {
+        Ok(ValueType::String) => path_arg(value, name).map(InputArg::Path),
+        Ok(ValueType::Object) if value.is_typedarray().unwrap_or(false) => {
+            Uint8Array::from_unknown(value)
+                .map(InputArg::Bytes)
+                .map_err(|e| bad_arg(format!("{name} must be a Uint8Array: {}", e.reason)))
+        }
+        _ => Err(invalid_arg(name, "a path string or a Uint8Array", &value)),
+    }
+}
+
+fn bytes_arg(value: Unknown, name: &str) -> Result<Uint8Array> {
+    match value.get_type() {
+        Ok(ValueType::Object) if value.is_typedarray().unwrap_or(false) => {
+            Uint8Array::from_unknown(value)
+                .map_err(|e| bad_arg(format!("{name} must be a Uint8Array: {}", e.reason)))
+        }
+        _ => Err(invalid_arg(name, "a Uint8Array", &value)),
+    }
+}
+
+/// Zero-based page indices for `extractSelection`. Shape and per-element
+/// checks happen here so misuse reports `SHARDPDF_INVALID_ARG`; emptiness,
+/// duplicates, and range are checked by the core against the parsed
+/// document and map to the same code.
+fn pages_arg(value: Unknown) -> Result<Vec<usize>> {
+    if !matches!(value.get_type(), Ok(ValueType::Object)) || !value.is_array().unwrap_or(false) {
+        return Err(bad_arg(format!(
+            "pages must be an array of page indices, got {}",
+            type_name(&value)
+        )));
+    }
+    let array = Object::from_unknown(value).map_err(|e| bad_arg(e.reason))?;
+    let len = array
+        .get_array_length()
+        .map_err(|e| bad_arg(format!("pages: {}", e.reason)))?;
+    if len == 0 {
+        return Err(bad_arg("pages must contain at least one index".into()));
+    }
+    let mut pages = Vec::with_capacity(len as usize);
+    for index in 0..len {
+        let raw: Unknown = array
+            .get_element(index)
+            .map_err(|e| bad_arg(format!("pages[{index}]: {}", e.reason)))?;
+        let n = match raw.get_type() {
+            Ok(ValueType::Number) => f64::from_unknown(raw).map_err(|e| bad_arg(e.reason))?,
+            _ => {
+                return Err(bad_arg(format!(
+                    "pages[{index}] must be a non-negative integer, got {}",
+                    type_name(&raw)
+                )))
+            }
+        };
+        if !n.is_finite() || n.fract() != 0.0 || n < 0.0 || n > u32::MAX as f64 {
+            return Err(bad_arg(format!(
+                "pages[{index}] must be a non-negative integer, got {n}"
+            )));
+        }
+        pages.push(n as usize);
+    }
+    Ok(pages)
 }
 
 /// `u32` parameters arrive as f64 from JavaScript; napi truncates silently
@@ -308,19 +421,72 @@ pub fn extract_pages(
     output_path: Unknown,
     options: Option<Unknown>,
 ) -> Result<u32> {
-    let input_path = path_arg(input_path, "inputPath")?;
-    let start_page = page_number(start_page, "startPage")?;
-    let end_page = page_number(end_page, "endPage")?;
-    let output_path = path_arg(output_path, "outputPath")?;
-    let load_options = load_options_arg(options)?;
-    extract::extract_pages_with_options(
-        std::path::Path::new(&input_path),
-        start_page,
-        end_page,
-        std::path::Path::new(&output_path),
-        &load_options,
-    )
-    .map_err(to_napi_err)
+    guard(|| {
+        let input_path = path_arg(input_path, "inputPath")?;
+        let start_page = page_number(start_page, "startPage")?;
+        let end_page = page_number(end_page, "endPage")?;
+        let output_path = path_arg(output_path, "outputPath")?;
+        let load_options = load_options_arg(options)?;
+        extract::extract_pages_with_options(
+            std::path::Path::new(&input_path),
+            start_page,
+            end_page,
+            std::path::Path::new(&output_path),
+            &load_options,
+        )
+        .map_err(to_napi_err)
+    })
+}
+
+/// Extract zero-based page indices from `input` (a path or PDF bytes) into
+/// `outputPath`, in the order given. The source is parsed exactly once.
+/// Returns the extracted page count. Same object-copy semantics as
+/// `extractPages`: all annotations, named destinations, and outlines are
+/// dropped. An empty array, a duplicate, a non-integer, a negative, or an
+/// out-of-range index is `SHARDPDF_INVALID_ARG`.
+#[napi(
+    catch_unwind,
+    ts_args_type = "input: string | Uint8Array, pages: Array<number>, outputPath: string, options?: LoadOptions | undefined | null"
+)]
+pub fn extract_selection(
+    input: Unknown,
+    pages: Unknown,
+    output_path: Unknown,
+    options: Option<Unknown>,
+) -> Result<u32> {
+    guard(|| {
+        let input = input_arg(input, "input")?;
+        let pages = pages_arg(pages)?;
+        let output_path = path_arg(output_path, "outputPath")?;
+        let load_options = load_options_arg(options)?;
+        extract::extract_selection(
+            input.as_source(),
+            &pages,
+            std::path::Path::new(&output_path),
+            &load_options,
+        )
+        .map_err(to_napi_err)
+    })
+}
+
+/// Parse `input` (a path or PDF bytes) and return its page count. Nothing
+/// is written. Synchronous: the whole document is parsed on the JS thread.
+#[napi(
+    catch_unwind,
+    ts_args_type = "input: string | Uint8Array, options?: LoadOptions | undefined | null"
+)]
+pub fn page_count(input: Unknown, options: Option<Unknown>) -> Result<u32> {
+    guard(|| {
+        let input = input_arg(input, "input")?;
+        let load_options = load_options_arg(options)?;
+        let count = assembler::page_count(input.as_source(), &load_options).map_err(to_napi_err)?;
+        u32::try_from(count).map_err(|_| {
+            napi::Error::new(
+                ErrorCode::Malformed,
+                format!("page count {count} exceeds u32"),
+            )
+        })
+    })
 }
 
 /// One bookmark in the document outline (flat preorder list; `level` gives
@@ -347,13 +513,15 @@ impl Assembly {
         ts_args_type = "outputPath: string, options?: LoadOptions | undefined | null"
     )]
     pub fn new(output_path: Unknown, options: Option<Unknown>) -> Result<Self> {
-        let output_path = path_arg(output_path, "outputPath")?;
-        let load_options = load_options_arg(options)?;
-        Ok(Assembly {
-            inner: Some(
-                assembler::Assembly::with_options(output_path, load_options)
-                    .map_err(to_napi_err)?,
-            ),
+        guard(|| {
+            let output_path = path_arg(output_path, "outputPath")?;
+            let load_options = load_options_arg(options)?;
+            Ok(Assembly {
+                inner: Some(
+                    assembler::Assembly::with_options(output_path, load_options)
+                        .map_err(to_napi_err)?,
+                ),
+            })
         })
     }
 
@@ -361,18 +529,34 @@ impl Assembly {
     /// Synchronous: blocks the event loop for the duration of the parse.
     #[napi(catch_unwind, ts_args_type = "shardPath: string")]
     pub fn append_shard(&mut self, shard_path: Unknown) -> Result<u32> {
-        let shard_path = path_arg(shard_path, "shardPath")?;
-        self.inner
-            .as_mut()
-            .ok_or_else(consumed)?
-            .append_shard_file(std::path::Path::new(&shard_path))
-            .map_err(to_napi_err)
+        guard(|| {
+            let shard_path = path_arg(shard_path, "shardPath")?;
+            self.inner
+                .as_mut()
+                .ok_or_else(consumed)?
+                .append_shard_file(std::path::Path::new(&shard_path))
+                .map_err(to_napi_err)
+        })
+    }
+
+    /// Appends one complete single-shard PDF held in memory; returns its
+    /// page count. The buffer is parsed synchronously and not retained.
+    #[napi(catch_unwind, ts_args_type = "bytes: Uint8Array")]
+    pub fn append_shard_bytes(&mut self, bytes: Unknown) -> Result<u32> {
+        guard(|| {
+            let bytes = bytes_arg(bytes, "bytes")?;
+            self.inner
+                .as_mut()
+                .ok_or_else(consumed)?
+                .append_shard_bytes(bytes.as_ref())
+                .map_err(to_napi_err)
+        })
     }
 
     /// Total pages appended so far.
     #[napi(getter, catch_unwind)]
     pub fn page_count(&self) -> Result<u32> {
-        Ok(self.inner.as_ref().ok_or_else(consumed)?.page_count() as u32)
+        guard(|| Ok(self.inner.as_ref().ok_or_else(consumed)?.page_count() as u32))
     }
 
     /// Whether `finalize()` or `abort()` has already consumed this assembly.
@@ -396,11 +580,37 @@ impl Assembly {
         ts_args_type = "outline?: Array<OutlineEntry> | undefined | null"
     )]
     pub fn finalize(&mut self, outline: Option<Unknown>) -> Result<()> {
-        let entries = outline_arg(outline)?;
-        self.inner
-            .take()
-            .ok_or_else(consumed)?
-            .finalize(entries.as_deref())
-            .map_err(to_napi_err)
+        guard(|| {
+            let entries = outline_arg(outline)?;
+            self.inner
+                .take()
+                .ok_or_else(consumed)?
+                .finalize(entries.as_deref())
+                .map_err(to_napi_err)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guard_maps_panics_to_coded_error() {
+        let err = guard::<()>(|| panic!("boom {}", 42)).unwrap_err();
+        assert_eq!(err.status, ErrorCode::Panic);
+        assert_eq!(ErrorCode::Panic.as_ref(), "SHARDPDF_PANIC");
+        assert_eq!(err.reason, "native panic: boom 42");
+
+        let err = guard::<()>(|| std::panic::panic_any(7u8)).unwrap_err();
+        assert_eq!(err.status, ErrorCode::Panic);
+        assert_eq!(err.reason, "native panic: panic from Rust code");
+    }
+
+    #[test]
+    fn guard_passes_results_through() {
+        assert_eq!(guard(|| Ok(3)).unwrap(), 3);
+        let err = guard::<()>(|| Err(consumed())).unwrap_err();
+        assert_eq!(err.status, ErrorCode::Consumed);
     }
 }

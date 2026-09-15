@@ -703,3 +703,5 @@ module.exports = nativeBinding
 module.exports.Assembly = nativeBinding.Assembly
 module.exports.buildInfo = nativeBinding.buildInfo
 module.exports.extractPages = nativeBinding.extractPages
+module.exports.extractSelection = nativeBinding.extractSelection
+module.exports.pageCount = nativeBinding.pageCount

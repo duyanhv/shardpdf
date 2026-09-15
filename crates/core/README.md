@@ -25,8 +25,11 @@ signal is observed. Pass `onShard` to observe each shard's page count as it is
 appended; throwing from it aborts the assembly.
 
 The low-level `Assembly` class remains available when callers need to append and
-delete shards one at a time. Call `abort()` to close an unfinished assembly; it
-is idempotent, so it is safe in a `finally` block after `finalize()`.
+delete shards one at a time. `appendShard(path)` reads from disk and
+`appendShardBytes(bytes)` parses a `Uint8Array` (or `Buffer`) already in
+memory; both return the shard's page count. Call `abort()` to close an
+unfinished assembly; it is idempotent, so it is safe in a `finally` block
+after `finalize()`.
 
 All native calls are synchronous and run on the JavaScript thread. Appending a
 500-page PDFKit shard blocks the event loop for roughly 50 ms in a debug build;
@@ -35,7 +38,8 @@ All native calls are synchronous and run on the JavaScript thread. Appending a
 ### Untrusted input
 
 Shards you rendered yourself need no limits. If a path or upload from outside
-your process can reach `assemble()`, `appendShard()`, or `extractPages()`,
+your process can reach `assemble()`, `appendShard()`, `appendShardBytes()`,
+`extractPages()`, `extractSelection()`, or `pageCount()`,
 pass `maxDecompressedBytes`: the parser inflates object streams eagerly on
 load, and a small file can otherwise allocate gigabytes before the core sees
 a page. Measured through `new Assembly()` + `appendShard()` in Node:
@@ -52,6 +56,8 @@ With a bound the oversized stream is skipped and the shard fails as
 await assemble({ shards, outputPath, maxDecompressedBytes: 64 * 1024 * 1024 });
 new Assembly(partialPath, { maxDecompressedBytes: 64 * 1024 * 1024 });
 extractPages(input, 1, 10, output, { maxDecompressedBytes: 64 * 1024 * 1024 });
+extractSelection(input, [0, 9], output, { maxDecompressedBytes: 64 * 1024 * 1024 });
+pageCount(input, { maxDecompressedBytes: 64 * 1024 * 1024 });
 ```
 
 `buildInfo()` returns `{ profile: "release" | "debug", version }` for the
@@ -68,13 +74,14 @@ Native errors carry a stable `code` (typed as `ShardPdfErrorCode`):
 | `SHARDPDF_IO`            | Filesystem failure: input missing or unreadable, output unwritable. |
 | `SHARDPDF_MALFORMED`     | Structural problem: no pages, cyclic parents, duplicate destination, bad outline, bad page range. |
 | `SHARDPDF_CONSUMED`      | Method called on an `Assembly` already finalized or aborted.        |
-| `SHARDPDF_INVALID_ARG`   | An argument had the wrong type, was an empty path, or was a negative, fractional, or non-finite number. Covers every `finalize()` outline field (`outline[i].pageIndex must be a non-negative integer, got 0.5`). |
+| `SHARDPDF_INVALID_ARG`   | An argument had the wrong type, was an empty path, or was a negative, fractional, or non-finite number. Covers every `finalize()` outline field (`outline[i].pageIndex must be a non-negative integer, got 0.5`) and every `extractSelection()` page index (empty array, duplicate, or out of range). |
+| `SHARDPDF_PANIC`         | The native core panicked. This is a shardpdf bug, not an input problem. The panic was caught at the binding boundary, the process is intact, and any in-progress `Assembly` should be aborted. |
 
 Every error thrown by the native layer carries one of these codes; napi's own
 conversion statuses (`StringExpected` and similar) are not exposed.
 
 Unwinding panics inside the native core are caught at the boundary and surface
-as ordinary JavaScript exceptions. This does not cover process-aborting
+as `SHARDPDF_PANIC` errors. This does not cover process-aborting
 failures such as stack overflow, `std::process::abort`, or an out-of-memory
 abort in the allocator; those still terminate the host.
 
@@ -84,3 +91,15 @@ reach (a `qpdf --pages` replacement for selective downloads). v1 drops all
 annotations (links, form widgets, anything in `/Annots`), named destinations,
 and outlines from the slice. A qpdf slice also loses bookmarks but keeps
 annotations, with links to out-of-range pages left silently dangling.
+
+`extractSelection(input, pages, outputPath)` is the zero-based form:
+`input` is a path or a `Uint8Array` of PDF bytes, `pages` is an array of
+zero-based indices emitted in the given order (`[4, 0, 2]` puts source page
+5 first), and the source is parsed exactly once. It has the same object-copy
+semantics and the same annotation, destination, and outline drops as
+`extractPages`. An empty array, a duplicate, a non-integer, a negative, or an
+out-of-range index is `SHARDPDF_INVALID_ARG`.
+
+`pageCount(input)` parses a path or `Uint8Array` and returns its page count
+without writing anything. Like every other native call it is synchronous:
+the entire document is parsed on the JavaScript thread.

@@ -30,6 +30,9 @@ pub enum AssemblyError {
     Pdf(lopdf::Error),
     Io(std::io::Error),
     Malformed(String),
+    /// A page selection was rejected: empty, duplicated, or out of range
+    /// for the document. A caller bug, not a property of the input PDF.
+    InvalidSelection(String),
 }
 
 impl fmt::Display for AssemblyError {
@@ -38,6 +41,7 @@ impl fmt::Display for AssemblyError {
             AssemblyError::Pdf(e) => write!(f, "pdf error: {e}"),
             AssemblyError::Io(e) => write!(f, "io error: {e}"),
             AssemblyError::Malformed(msg) => write!(f, "malformed shard: {msg}"),
+            AssemblyError::InvalidSelection(msg) => write!(f, "invalid page selection: {msg}"),
         }
     }
 }
@@ -121,6 +125,46 @@ pub fn load_document(path: &Path, options: &ShardLoadOptions) -> Result<Document
     Ok(Document::load_with_options(path, options.to_lopdf())?)
 }
 
+/// Parses a PDF already held in memory with the given shard options.
+pub fn load_document_bytes(bytes: &[u8], options: &ShardLoadOptions) -> Result<Document> {
+    Ok(Document::load_mem_with_options(bytes, options.to_lopdf())?)
+}
+
+/// Where a PDF comes from: a path on disk or bytes already in memory. Both
+/// parse through the same lopdf options, so a document behaves identically
+/// whichever way it arrives.
+#[derive(Debug, Clone, Copy)]
+pub enum PdfSource<'a> {
+    Path(&'a Path),
+    Bytes(&'a [u8]),
+}
+
+impl<'a> From<&'a Path> for PdfSource<'a> {
+    fn from(path: &'a Path) -> Self {
+        PdfSource::Path(path)
+    }
+}
+
+impl<'a> From<&'a [u8]> for PdfSource<'a> {
+    fn from(bytes: &'a [u8]) -> Self {
+        PdfSource::Bytes(bytes)
+    }
+}
+
+/// Loads a PDF from either source with the given shard options.
+pub fn load_source(source: PdfSource<'_>, options: &ShardLoadOptions) -> Result<Document> {
+    match source {
+        PdfSource::Path(path) => load_document(path, options),
+        PdfSource::Bytes(bytes) => load_document_bytes(bytes, options),
+    }
+}
+
+/// Parses the source and returns its page count. Nothing is built or
+/// written; the working set is one parsed document.
+pub fn page_count(source: PdfSource<'_>, options: &ShardLoadOptions) -> Result<usize> {
+    Ok(load_source(source, options)?.get_pages().len())
+}
+
 pub struct Assembly {
     output_path: PathBuf,
     load_options: ShardLoadOptions,
@@ -162,6 +206,13 @@ impl Assembly {
 
     pub fn append_shard_file(&mut self, path: &Path) -> Result<u32> {
         let shard = load_document(path, &self.load_options)?;
+        self.append_shard_doc(shard)
+    }
+
+    /// Same as [`append_shard_file`](Self::append_shard_file) but parses the
+    /// shard from memory. The caller's buffer is not retained.
+    pub fn append_shard_bytes(&mut self, bytes: &[u8]) -> Result<u32> {
+        let shard = load_document_bytes(bytes, &self.load_options)?;
         self.append_shard_doc(shard)
     }
 

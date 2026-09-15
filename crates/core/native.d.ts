@@ -7,6 +7,11 @@ export declare class Assembly {
    * Synchronous: blocks the event loop for the duration of the parse.
    */
   appendShard(shardPath: string): number
+  /**
+   * Appends one complete single-shard PDF held in memory; returns its
+   * page count. The buffer is parsed synchronously and not retained.
+   */
+  appendShardBytes(bytes: Uint8Array): number
   /** Total pages appended so far. */
   get pageCount(): number
   /** Whether `finalize()` or `abort()` has already consumed this assembly. */
@@ -48,6 +53,16 @@ export interface BuildInfo {
 export declare function extractPages(inputPath: string, startPage: number, endPage: number, outputPath: string, options?: LoadOptions | undefined | null): number
 
 /**
+ * Extract zero-based page indices from `input` (a path or PDF bytes) into
+ * `outputPath`, in the order given. The source is parsed exactly once.
+ * Returns the extracted page count. Same object-copy semantics as
+ * `extractPages`: all annotations, named destinations, and outlines are
+ * dropped. An empty array, a duplicate, a non-integer, a negative, or an
+ * out-of-range index is `SHARDPDF_INVALID_ARG`.
+ */
+export declare function extractSelection(input: string | Uint8Array, pages: Array<number>, outputPath: string, options?: LoadOptions | undefined | null): number
+
+/**
  * Optional resource limits for parsing shards.
  *
  * `maxDecompressedBytes` bounds how far any one compressed stream may
@@ -74,3 +89,9 @@ export interface OutlineEntry {
   /** Nesting depth; defaults to 0 when omitted. */
   level?: number
 }
+
+/**
+ * Parse `input` (a path or PDF bytes) and return its page count. Nothing
+ * is written. Synchronous: the whole document is parsed on the JS thread.
+ */
+export declare function pageCount(input: string | Uint8Array, options?: LoadOptions | undefined | null): number
