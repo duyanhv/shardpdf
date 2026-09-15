@@ -304,14 +304,19 @@ a smaller multiplier because their bytes are mostly opaque blobs.
 holds when measured properly.
 
 **Decompression bombs (fixed 2026-09-15).** lopdf decodes object streams
-eagerly on load and the assembler set no bound. Measured: a 261 KB file
-whose `/ObjStm` inflates to 1 GB reached 883 MB resident in 190 ms before the
-assembler saw a page. `maxDecompressedBytes` is now an option on
+eagerly on load and the assembler set no bound. Measured through the public
+Node API (`/usr/bin/time -l`, one `appendShard`): a 261 KB file inflating to
+256 MB reached 932 MB resident in 3.3 s; a 1.0 MB file inflating to 1 GB
+reached 3.35 GB in 13.3 s. Both were accepted as valid one-page shards.
+`maxDecompressedBytes` is now an option on
 `Assembly`, `assemble()`, and `extractPages()`, plumbed to lopdf's
-`LoadOptions.max_decompressed_size`. With a 1 MB bound the same file is
-rejected in under a millisecond as `SHARDPDF_MALFORMED` ("shard has no
-pages": lopdf skips the over-budget stream rather than surfacing the limit
-error, so the code is not distinct). Regression tests in Rust and JS build
+`LoadOptions.max_decompressed_size`. With a 1 MB bound the same files are
+rejected in 3 to 5 ms at 57 MB resident (Node's baseline) as
+`SHARDPDF_MALFORMED` ("shard has no pages": lopdf skips the over-budget
+stream rather than surfacing the limit error, so the code is not distinct).
+Option validation was probed with 8 wrong values and 3 wrong shapes across
+`extractPages`, `Assembly`, and `assemble()`; all `SHARDPDF_INVALID_ARG`, no
+partial files left behind. Regression tests in Rust and JS build
 the bomb by hand (lopdf's writer will not emit one) and assert both the
 rejection and that the unbounded load of the same file is a legal one-page
 document. The default stays unbounded: this only matters for untrusted

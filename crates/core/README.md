@@ -37,9 +37,16 @@ All native calls are synchronous and run on the JavaScript thread. Appending a
 Shards you rendered yourself need no limits. If a path or upload from outside
 your process can reach `assemble()`, `appendShard()`, or `extractPages()`,
 pass `maxDecompressedBytes`: the parser inflates object streams eagerly on
-load, and a 250 KB file can otherwise allocate gigabytes before the core sees
-a page (measured: 261 KB on disk, 883 MB resident). With a bound the
-oversized stream is skipped and the shard fails as `SHARDPDF_MALFORMED`.
+load, and a small file can otherwise allocate gigabytes before the core sees
+a page. Measured through `new Assembly()` + `appendShard()` in Node:
+
+| File on disk | Inflates to | Unbounded | `maxDecompressedBytes: 1 MB` |
+| ---: | ---: | --- | --- |
+| 261 KB | 256 MB | 932 MB RSS, 3.3 s | 57 MB RSS, 5 ms, `SHARDPDF_MALFORMED` |
+| 1.0 MB | 1 GB | 3.35 GB RSS, 13.3 s | 58 MB RSS, 3 ms, `SHARDPDF_MALFORMED` |
+
+With a bound the oversized stream is skipped and the shard fails as
+`SHARDPDF_MALFORMED` ("shard has no pages").
 
 ```ts
 await assemble({ shards, outputPath, maxDecompressedBytes: 64 * 1024 * 1024 });
