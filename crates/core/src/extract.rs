@@ -3,9 +3,10 @@
 //! copying only objects reachable from the selected pages.
 //!
 //! v1 scope (documented, matches the selective-download use case it serves):
-//! - Link annotations are dropped from extracted pages. (qpdf keeps them, but
-//!   any target outside the range dangles silently — we prefer no link over a
-//!   dead one.)
+//! - ALL annotations (`/Annots`: links, widgets, anything else) are dropped
+//!   from extracted pages. (qpdf keeps them, but any link target outside the
+//!   range dangles silently — we prefer no link over a dead one. Widgets are
+//!   lost too; that is a real gap, not parity.)
 //! - Named destinations and outlines are not carried over — same behavior as
 //!   a qpdf page slice, whose output has no bookmarks either.
 //! - Working set is O(source parse + extracted objects), not O(one shard):

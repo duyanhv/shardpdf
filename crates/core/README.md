@@ -80,6 +80,7 @@ abort in the allocator; those still terminate the host.
 
 `extractPages(inputPath, startPage, endPage, outputPath)` slices an inclusive,
 1-based page range into a new PDF, copying only objects the selected pages
-reach (a `qpdf --pages` replacement for selective downloads). v1 drops link
-annotations, named destinations, and outlines from the slice — a qpdf slice
-also loses bookmarks, and keeps links only as silently dangling targets.
+reach (a `qpdf --pages` replacement for selective downloads). v1 drops all
+annotations (links, form widgets, anything in `/Annots`), named destinations,
+and outlines from the slice. A qpdf slice also loses bookmarks but keeps
+annotations, with links to out-of-range pages left silently dangling.

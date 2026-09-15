@@ -40,9 +40,10 @@ export interface BuildInfo {
 /**
  * Extract an inclusive, 1-based page range from `inputPath` into
  * `outputPath`, copying only objects the selected pages reach. Returns the
- * extracted page count. v1 drops link annotations, named destinations, and
- * outlines from the result — parity note: a qpdf page slice also loses
- * bookmarks, and keeps links only as silently-dangling targets.
+ * extracted page count. v1 drops ALL annotations (links, widgets, and any
+ * other /Annots entries), named destinations, and outlines from the result.
+ * Parity note: a qpdf page slice also loses bookmarks, but keeps
+ * annotations, with links to pages outside the range left dangling.
  */
 export declare function extractPages(inputPath: string, startPage: number, endPage: number, outputPath: string, options?: LoadOptions | undefined | null): number
 

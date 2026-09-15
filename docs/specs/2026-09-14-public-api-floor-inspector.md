@@ -3,6 +3,29 @@
 Date: 2026-09-14. Status: **proposal; the API below is not implemented**.
 Inspected shardpdf at `32e13a5` and Floor Inspector backend at `4658e375d`.
 
+## Review (2026-09-15)
+
+Re-checked against shardpdf `ee3f33d` and Floor Inspector `4658e375d`.
+
+- Evidence table verified: every cited file exists; `bufferPages: false`,
+  `isolateRun = true`, `qpdfMerge` in `merge`, the outline try/catch fallback
+  in `store`, 8 blocks / 60 units / 12,000 pages, and the qpdf memory cap and
+  cancellation all match. No named-destination or `.link()` calls in the
+  renderer subtree.
+- Status line is still accurate: `merge`, `extract`, and `getPageCount` are not
+  exported. `@shardpdf/core` exports `assemble`, `extractPages`, `Assembly`,
+  `buildInfo`. All napi calls are synchronous; `assemble` yields between
+  shards but does not run off-thread.
+- Error codes: five codes exist (`PDF_PARSE`, `IO`, `MALFORMED`, `CONSUMED`,
+  `INVALID_ARG`). Bindings are `catch_unwind`, but a caught panic surfaces as a
+  generic napi error with no `SHARDPDF_*` code, and wrapper `rename`/`rm`
+  failures surface as plain Node errors. The spec's warning about the code
+  union stands.
+- Discrepancy fixed in this pass: `extract.rs` removes the entire `/Annots`
+  array, but the doc comments, `native.d.ts`, and README said "link
+  annotations". Wording corrected to "all annotations" to match the
+  `annotations: "drop"` acknowledgement proposed here.
+
 ## Recommendation
 
 Publish a small set of PDF operations from `@shardpdf/core`: `merge`,
