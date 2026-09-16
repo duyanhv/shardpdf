@@ -58,11 +58,12 @@ run "bun cjs"  bun cjs.test.cjs
 run "bun esm"  bun esm.test.mjs
 
 step "Floor Inspector acceptance (spec mapping vs qpdf oracle)"
-if command -v qpdf >/dev/null 2>&1 && [ -f /System/Library/Fonts/AppleSDGothicNeo.ttc ]; then
+if command -v qpdf >/dev/null 2>&1; then
+  # The script itself skips (exit 0) when no CJK font is available.
   run "node floor-acceptance" node floor-acceptance.cjs
   run "bun floor-acceptance"  bun floor-acceptance.cjs
 else
-  echo "SKIP floor-acceptance: needs qpdf on PATH and a CJK font at /System/Library/Fonts/AppleSDGothicNeo.ttc"
+  echo "SKIP floor-acceptance: needs qpdf on PATH"
 fi
 
 step "type tests (tsc --noEmit, nodenext, .ts as ESM + .cts as CJS)"

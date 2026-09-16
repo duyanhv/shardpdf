@@ -19,7 +19,36 @@ const PDFDocument = require("pdfkit");
 const { extract, getPageCount, merge } = require("@shardpdf/core");
 
 const execFileP = promisify(execFile);
-const FONT = "/System/Library/Fonts/AppleSDGothicNeo.ttc";
+const { existsSync } = require("node:fs");
+
+// A CJK-capable font so the Korean labels are real embedded glyphs, like
+// Floor's PDFKit renderer. First match wins; override with FLOOR_FONT=path[:face].
+const FONT_CANDIDATES = [
+  ["/System/Library/Fonts/AppleSDGothicNeo.ttc", "AppleSDGothicNeo-Regular"],
+  [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "NotoSansCJKkr-Regular",
+  ],
+  [
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "NotoSansCJKkr-Regular",
+  ],
+];
+function pickFont() {
+  if (process.env.FLOOR_FONT) {
+    const [file, face] = process.env.FLOOR_FONT.split(":");
+    return { file, face };
+  }
+  const hit = FONT_CANDIDATES.find(([file]) => existsSync(file));
+  if (!hit) {
+    console.log(
+      "SKIP floor-acceptance: no CJK font found; set FLOOR_FONT=path[:face]",
+    );
+    process.exit(0);
+  }
+  return { file: hit[0], face: hit[1] };
+}
+const FONT = pickFont();
 
 // Floor: report-generation.constants.ts / pdf-outline.util.ts
 const LABELS = {
@@ -68,7 +97,7 @@ async function renderChunk(dir, chunk, globalStart) {
     out.on("error", rej);
   });
   doc.pipe(out);
-  doc.registerFont("KR", FONT, "AppleSDGothicNeo-Regular");
+  doc.registerFont("KR", FONT.file, FONT.face);
   // Local one-based inclusive ranges, like report-pdf-chunking.ts records.
   const local = [];
   let page = 0;

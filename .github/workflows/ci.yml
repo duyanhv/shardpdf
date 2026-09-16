@@ -49,6 +49,10 @@ jobs:
       - name: Orchestrator tests
         working-directory: packages/orchestrator
         run: node --test "test/*.test.ts"
+      - name: Install CJK font for the Floor acceptance check
+        run: sudo apt-get install -y fonts-noto-cjk
+      - name: Consumer smoke (packed tarball, Node + Bun, CJS + ESM, types, Floor acceptance)
+        run: bun run smoke:consumer
 
   prebuild:
     name: Prebuild ${{ matrix.target }}
@@ -94,4 +98,40 @@ jobs:
         with:
           name: bindings-${{ matrix.target }}
           path: crates/core/shardpdf-core.*.node
+          if-no-files-found: error
+
+  package:
+    name: Package and smoke the multi-platform tarball
+    needs: prebuild
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install qpdf and a CJK font (acceptance oracle)
+        run: sudo apt-get update && sudo apt-get install -y qpdf fonts-noto-cjk
+      - run: bun install --frozen-lockfile
+      - name: Download every prebuilt binding into the package
+        uses: actions/download-artifact@v7
+        with:
+          pattern: bindings-*
+          path: crates/core
+          merge-multiple: true
+      - name: List bundled bindings
+        working-directory: crates/core
+        run: ls -la shardpdf-core.*.node
+      # native.js tries ./shardpdf-core.<platform>.node before any
+      # @shardpdf/core-<platform> package, and package.json "files" includes
+      # *.node, so one tarball with every binding needs no per-platform packages.
+      - name: Consumer smoke against the release tarball
+        run: bun run smoke:consumer
+      - name: Upload the tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: shardpdf-core-tarball
+          path: smoke/consumer/vendor/shardpdf-core.tgz
           if-no-files-found: error
