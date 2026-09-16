@@ -75,7 +75,16 @@ step "Floor rlimit limiter (ulimit -v, Linux only; macOS rejects RLIMIT_AS)"
 if [ "$(uname -s)" = "Linux" ]; then
   probe() {
     local label="$1"; shift
-    if "$@" >/dev/null 2>&1; then echo "INFO $label: ok"; else echo "INFO $label: exit $?"; fi
+    local err; err="$(mktemp)"
+    if "$@" >/dev/null 2>"$err"; then
+      echo "INFO $label: ok"
+    else
+      local code=$?
+      # Keep the first meaningful line of stderr so a JS-level error (e.g. a
+      # SHARDPDF_* code) is distinguishable from a runtime OOM abort.
+      echo "INFO $label: exit $code: $(grep -vE '^\s*$|^\s+at |core dumped' "$err" | head -1 | cut -c1-160)"
+    fi
+    rm -f "$err"
   }
   for cap in 768 2048 4096; do
     probe "node -e 0 under ulimit -v ${cap}MB"          sh -c "ulimit -v $((cap * 1024)); exec node -e 0"
