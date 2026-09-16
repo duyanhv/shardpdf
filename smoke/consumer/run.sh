@@ -67,10 +67,21 @@ else
 fi
 
 step "Floor rlimit limiter (ulimit -v, Linux only; macOS rejects RLIMIT_AS)"
+# Informational, never fails the run: it establishes what a JS runtime itself
+# needs under RLIMIT_AS before shardpdf is involved. On 2026-09-16 (ubuntu,
+# x86_64) Node 24 died in v8::V8::Initialize and Bun aborted at 768 MB with a
+# bare `-e 0`, so Floor's "rlimit" limiter cannot host a Node/Bun child at its
+# default cap. shardpdf inherits that constraint; it is not caused by it.
 if [ "$(uname -s)" = "Linux" ]; then
-  for cap in 768 256; do
-    run "node under ulimit -v ${cap}MB" sh -c "ulimit -v $((cap * 1024)); exec node rlimit-probe.cjs"
-    run "bun under ulimit -v ${cap}MB"  sh -c "ulimit -v $((cap * 1024)); exec bun rlimit-probe.cjs"
+  probe() {
+    local label="$1"; shift
+    if "$@" >/dev/null 2>&1; then echo "INFO $label: ok"; else echo "INFO $label: exit $?"; fi
+  }
+  for cap in 768 2048 4096; do
+    probe "node -e 0 under ulimit -v ${cap}MB"          sh -c "ulimit -v $((cap * 1024)); exec node -e 0"
+    probe "bun -e 0 under ulimit -v ${cap}MB"           sh -c "ulimit -v $((cap * 1024)); exec bun -e 0"
+    probe "node merge() 2200 pages under ulimit -v ${cap}MB" sh -c "ulimit -v $((cap * 1024)); exec node rlimit-probe.cjs"
+    probe "bun merge() 2200 pages under ulimit -v ${cap}MB"  sh -c "ulimit -v $((cap * 1024)); exec bun rlimit-probe.cjs"
   done
 else
   echo "SKIP rlimit probe on $(uname -s)"
