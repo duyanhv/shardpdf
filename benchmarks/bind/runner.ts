@@ -125,8 +125,12 @@ function nestOutline(flat: BindFixtureManifest["outline"]) {
     const node: Node = { title: entry.title, pageIndex: entry.pageIndex };
     stack.length = entry.level;
     const parent = stack[entry.level - 1];
-    if (parent === undefined) roots.push(node);
-    else (parent.children ??= []).push(node);
+    if (parent === undefined) {
+      roots.push(node);
+    } else {
+      parent.children ??= [];
+      parent.children.push(node);
+    }
     stack.push(node);
   }
   return roots;
