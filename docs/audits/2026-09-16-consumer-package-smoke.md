@@ -89,7 +89,46 @@ drives it for `linux/arm64` and `linux/amd64`; CI runs both in the
 `linux-smoke` job on native runners.
 
 Attempted locally on 2026-09-16: the Docker daemon on this macOS host was
-reachable (`docker info` answered in about 8 s) but never received a byte of
-`node:24-bookworm` in 10 minutes of pulling, so no Linux result exists from
-this machine. This is a host constraint, not a package failure. The first
-green `linux-smoke` CI run is the evidence to cite for glibc x86_64/aarch64.
+reachable but never received a byte of `node:24-bookworm`, so the Linux
+result comes from CI.
+
+**Observed, CI run 35100920445 (2026-09-16, commit `ae8a4a7`):**
+
+| Job | Toolchain | Result |
+| --- | --- | --- |
+| `linux-smoke` linux/amd64 | Node v24.21.0, Bun 1.4.2, qpdf 11.3.0, glibc 2.36, release binding built in-container | node/bun cjs+esm, floor-acceptance node+bun, tsc nodenext+bundler, negative types: all PASS |
+| `linux-smoke` linux/arm64 | same, aarch64 | all PASS |
+| `package` | six prebuilt bindings (darwin-arm64, darwin-x64, linux-arm64-gnu, linux-x64-gnu, win32-arm64-msvc, win32-x64-msvc) in one tarball | consumer smoke PASS on ubuntu x64 |
+| `checks` (ubuntu, host build) | Node v24.20.0, Bun 1.3.14 | all PASS |
+
+The multi-platform tarball works because `native.js` prefers a sibling
+`shardpdf-core.<platform>.node` over the `@shardpdf/core-<platform>` optional
+packages, and `files` includes `*.node`. The earlier "undeclared optional
+deps" gap is therefore not blocking for a single bundled tarball; it only
+matters if the package is ever split per platform.
+
+### Floor's `rlimit` limiter (informational probe, same run)
+
+Floor's `spawn-with-memory-cap.ts` "rlimit" mode wraps the child in
+`ulimit -v <cap>; exec`. `EXPORT_MEMORY_CAP_MB` defaults to 768. The probe
+runs a bare `-e 0` and a 2,200-page `merge()` under several caps:
+
+| Cap | `node -e 0` | `bun -e 0` | node `merge()` | bun `merge()` |
+| ---: | --- | --- | --- | --- |
+| 768 MB, x86_64 | exit 133 (V8 init OOM) | ok | exit 133 | exit 134 |
+| 768 MB, aarch64 | exit 133 | exit 134 | exit 133 | exit 134 |
+| 2048 MB, x86_64 | ok | ok | ok | ok |
+| 2048 MB, aarch64 | ok | ok | ok | exit 1 (once) |
+| 4096 MB, both | ok | ok | ok | ok |
+
+Node 24 cannot even start under a 768 MB address-space cap (V8 reserves its
+sandbox and code range up front), so Floor's `rlimit` mode cannot host a
+Node child at its default cap regardless of what the child does. Bun starts
+at 768 MB on x86_64 but aborts during the merge. At 2 GB and above both
+runtimes complete the merge, with one unexplained Bun exit 1 on aarch64 at
+2 GB that did not reproduce at 4 GB. This is a property of the JS runtimes
+under `RLIMIT_AS`, not of shardpdf: the same `merge()` measured 87 MB RSS on
+11,164 pages. The practical consequence for Floor is that a shardpdf child
+must run under the `cgroup` limiter (`MemoryMax`, which caps RSS not address
+space), or in-process with `maxDecompressedBytes` as the untrusted-input
+bound. The `rlimit` mode remains suitable for qpdf.

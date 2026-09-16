@@ -92,9 +92,16 @@ Type boundary: `smoke/consumer` also compiles the public types under
 (7.0.2).
 
 Platform boundary: `smoke/linux/` builds the binding from a clean copy inside
-`node:24-bookworm` and runs the full consumer smoke; CI runs it for amd64 and
-arm64. No Linux result exists from this macOS host (Docker could not pull the
-base image); the first green `linux-smoke` job is the evidence for glibc.
+`node:24-bookworm` and runs the full consumer smoke. CI run 35100920445 passed
+it on linux/amd64 and linux/arm64 (Node 24.21, Bun 1.4.2, glibc 2.36) and
+also smoked a single tarball bundling all six prebuilt bindings.
+
+Resource-limiter boundary: Floor's `rlimit` mode (`ulimit -v`, default
+768 MB) cannot start Node 24 at all and aborts Bun during a merge; both
+complete at 2 GB and 4 GB. That is the runtimes' address-space reservation,
+not shardpdf (87 MB RSS at 11k pages). A shardpdf child in Floor must use
+the `cgroup` limiter. Details and the table are in
+`docs/audits/2026-09-16-consumer-package-smoke.md`.
 
 Not done: step 5, the Floor canary on real shards under the process cap in
 the Floor repo. See `docs/specs/2026-09-15-floor-integration-benchmark-plan.md`.
