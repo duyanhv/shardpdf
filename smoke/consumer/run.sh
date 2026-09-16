@@ -68,6 +68,8 @@ fi
 
 step "type tests (tsc --noEmit, nodenext, .ts as ESM + .cts as CJS)"
 run "tsc" "$tsc" -p tsconfig.json
+# Floor Inspector compiles with module esnext + moduleResolution bundler.
+run "tsc (bundler resolution, Floor's tsconfig shape)" "$tsc" -p tsconfig.bundler.json
 # Prove the @ts-expect-error lines are load-bearing: strip them and require
 # at least one error per stripped directive.
 expected="$(grep -c '@ts-expect-error' types/esm/index.ts types/cjs.cts | awk -F: '{s+=$2} END {print s}')"
