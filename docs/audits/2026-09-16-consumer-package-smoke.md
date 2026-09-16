@@ -92,7 +92,7 @@ Attempted locally on 2026-09-16: the Docker daemon on this macOS host was
 reachable but never received a byte of `node:24-bookworm`, so the Linux
 result comes from CI.
 
-**Observed, CI run 35100920445 (2026-09-16, commit `ae8a4a7`):**
+**Observed, CI run 35100920445 (2026-09-16, commit `941c9b6`):**
 
 | Job | Toolchain | Result |
 | --- | --- | --- |
