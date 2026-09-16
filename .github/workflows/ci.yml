@@ -135,3 +135,20 @@ jobs:
           name: shardpdf-core-tarball
           path: smoke/consumer/vendor/shardpdf-core.tgz
           if-no-files-found: error
+
+  linux-smoke:
+    name: Linux consumer smoke (${{ matrix.platform }}, clean in-container build)
+    needs: checks
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the binding inside the container and run the consumer smoke
+        run: bash smoke/linux/run.sh ${{ matrix.platform }}

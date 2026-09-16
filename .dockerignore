@@ -3,3 +3,7 @@
 **/.turbo
 benchmarks/out
 benchmarks/results
+target
+**/target
+smoke/consumer/vendor
+smoke/consumer/node_modules

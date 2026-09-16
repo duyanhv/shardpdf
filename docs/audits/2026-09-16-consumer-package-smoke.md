@@ -78,3 +78,18 @@ guard until the package is ready for a registry. Remove it at publish time.
   `optionalDependencies`.
 - The binary tested is a debug build (`buildInfo().profile === "debug"`).
   Behaviour is identical; only timings differ.
+
+## Addendum 2026-09-16 (later): Linux path
+
+`smoke/linux/` adds a Dockerfile that builds the binding from a clean copy of
+the repo inside `node:24-bookworm` (host `.node` files are deleted first, and
+the build asserts `profile === "release"`), then runs `smoke/consumer/run.sh`
+including the Floor acceptance check with Noto Sans CJK. `smoke/linux/run.sh`
+drives it for `linux/arm64` and `linux/amd64`; CI runs both in the
+`linux-smoke` job on native runners.
+
+Attempted locally on 2026-09-16: the Docker daemon on this macOS host was
+reachable (`docker info` answered in about 8 s) but never received a byte of
+`node:24-bookworm` in 10 minutes of pulling, so no Linux result exists from
+this machine. This is a host constraint, not a package failure. The first
+green `linux-smoke` CI run is the evidence to cite for glibc x86_64/aarch64.
