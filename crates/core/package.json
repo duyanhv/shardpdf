@@ -22,10 +22,12 @@
     "fuzz:seed": "cargo run --example gen_fuzz_seed",
     "test": "cargo test -p shardpdf-core && node --test \"test/*.test.js\"",
     "test:bun": "bun test test/api.test.js",
-    "typecheck": "tsc --noEmit --allowJs --checkJs --module nodenext --moduleResolution nodenext --target es2022 --types node index.js test/api.test.js test/api-types.ts"
+    "typecheck": "tsc --noEmit --allowJs --checkJs --module nodenext --moduleResolution nodenext --target es2022 --types node index.js test/api.test.js test/public-api.test.js test/api-types.ts"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.8.2",
-    "@types/node": "^24"
+    "@types/node": "^24",
+    "pdfkit": "^0.19.1",
+    "@types/pdfkit": "^0.17.6"
   }
 }

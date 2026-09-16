@@ -4,6 +4,52 @@ Streaming native PDF assembly for Node and Bun. Existing PDFKit or renderer
 pipelines can keep their current shard generation and bind the resulting PDFs
 without loading the complete document into V8.
 
+## Public operations
+
+```ts
+import { extract, getPageCount, merge } from "@shardpdf/core";
+
+const merged = await merge(["./chunk-000.pdf", "./chunk-001.pdf"], "./report.pdf", {
+  outline: [
+    { title: "Report", pageIndex: 0, children: [{ title: "Intro", pageIndex: 1 }] },
+  ],
+  onProgress: ({ completed, total, pageCount }) => {},
+  signal: abortController.signal,
+});
+merged.pageCount; // total pages
+merged.inputs[1]; // { pageCount, startPageIndex }
+merged.byteLength; // size of the closed output file
+
+const pages = await getPageCount("./report.pdf");
+
+await extract("./report.pdf", "./section.pdf", {
+  pages: { start: 2, end: 5 }, // zero-based, end-exclusive; or [4, 0, 2]
+  annotations: "drop", // required acknowledgement, see below
+});
+```
+
+Inputs are a path string, a `file:` URL, or a `Uint8Array`/`Buffer` of PDF
+bytes. Outputs are a path or `file:` URL. Remote URLs are rejected; download
+them first. All page indices in this API are zero-based.
+
+`merge` and `extract` write to a unique sibling temporary file and rename it
+into place only after the native writer has finished, so an existing output is
+never replaced by a partial one. Errors, a throwing `onProgress`, and an
+aborted `signal` remove the temporary file and reject. Cancellation is checked
+between inputs and before publication, not inside a native call.
+
+`extract` requires `annotations: "drop"` because this release removes every
+`/Annots` entry (links and form widgets), named destinations, and outlines from
+the selected pages. Passing an array selects pages in the given order; repeated
+pages are rejected until repeated-page copying is implemented.
+
+Argument validation throws `TypeError`/`RangeError`; cancellation rejects with
+`AbortError`; filesystem failures from the wrapper's own rename and stat
+steps are ordinary Node errors; everything from the parser carries a
+`SHARDPDF_*` code (see Errors).
+
+## Low-level assembly
+
 ```ts
 import { assemble } from "@shardpdf/core";
 
@@ -17,7 +63,7 @@ const result = await assemble({
 console.log(result.pageCount);
 ```
 
-`assemble()` writes to a unique partial path in the output directory and only
+`assemble()` is the flat-outline, path-only predecessor of `merge()`. It writes to a unique partial path in the output directory and only
 atomically renames it to `outputPath` after native finalization succeeds. Errors
 and cancellation close and remove the partial file. Cancellation is checked
 between shard appends; a native append already in progress completes before the
