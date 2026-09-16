@@ -107,28 +107,35 @@ packages, and `files` includes `*.node`. The earlier "undeclared optional
 deps" gap is therefore not blocking for a single bundled tarball; it only
 matters if the package is ever split per platform.
 
-### Floor's `rlimit` limiter (informational probe, same run)
+### Floor's `rlimit` limiter (informational probe)
 
 Floor's `spawn-with-memory-cap.ts` "rlimit" mode wraps the child in
 `ulimit -v <cap>; exec`. `EXPORT_MEMORY_CAP_MB` defaults to 768. The probe
-runs a bare `-e 0` and a 2,200-page `merge()` under several caps:
+runs a bare `-e 0` and a 2,200-page `merge()` under several caps.
+
+First run (35101814838, lopdf with its default `rayon` feature): Bun
+`merge()` failed at 768 MB on both architectures with "memory allocation
+failed", and on aarch64 at 2048 MB with a rayon-core panic, "failed to spawn
+thread", from lopdf's global parse pool. That pool was the only reason
+shardpdf needed extra address space, so `rayon` was disabled (commit
+`2143e24`, timing cost measured in the benchmark doc).
+
+Observed after that change, run 35103262004:
 
 | Cap | `node -e 0` | `bun -e 0` | node `merge()` | bun `merge()` |
 | ---: | --- | --- | --- | --- |
-| 768 MB, x86_64 | exit 133 (V8 init OOM) | ok | exit 133 | exit 134 |
-| 768 MB, aarch64 | exit 133 | exit 134 | exit 133 | exit 134 |
-| 2048 MB, x86_64 | ok | ok | ok | ok |
-| 2048 MB, aarch64 | ok | ok | ok | exit 1 (once) |
+| 768 MB, x86_64 | exit 133 (V8 init OOM) | ok | exit 133 | ok in-container; one alloc failure on the host job |
+| 768 MB, aarch64 | exit 133 | exit 134 | exit 133 | exit 134 (runtime never started) |
+| 2048 MB, both | ok | ok | ok | ok |
 | 4096 MB, both | ok | ok | ok | ok |
 
-Node 24 cannot even start under a 768 MB address-space cap (V8 reserves its
-sandbox and code range up front), so Floor's `rlimit` mode cannot host a
-Node child at its default cap regardless of what the child does. Bun starts
-at 768 MB on x86_64 but aborts during the merge. At 2 GB and above both
-runtimes complete the merge, with one unexplained Bun exit 1 on aarch64 at
-2 GB that did not reproduce at 4 GB. This is a property of the JS runtimes
-under `RLIMIT_AS`, not of shardpdf: the same `merge()` measured 87 MB RSS on
-11,164 pages. The practical consequence for Floor is that a shardpdf child
-must run under the `cgroup` limiter (`MemoryMax`, which caps RSS not address
-space), or in-process with `maxDecompressedBytes` as the untrusted-input
-bound. The `rlimit` mode remains suitable for qpdf.
+Every remaining failure is the runtime itself failing before or regardless
+of shardpdf: Node 24 cannot initialise V8 under a 768 MB address-space cap
+on either architecture, and Bun cannot start under it on aarch64. Where the
+runtime starts, `merge()` completes. So Floor's `rlimit` mode cannot host a
+Node child at its default cap regardless of the child's work, and a Bun
+child is architecture-dependent at that cap. The practical consequence is
+that a shardpdf child in Floor must run under the `cgroup` limiter
+(`MemoryMax`, which caps RSS not address space), or in-process with
+`maxDecompressedBytes` as the untrusted-input bound. The `rlimit` mode
+remains suitable for qpdf.

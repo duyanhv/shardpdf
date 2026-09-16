@@ -97,10 +97,12 @@ it on linux/amd64 and linux/arm64 (Node 24.21, Bun 1.4.2, glibc 2.36) and
 also smoked a single tarball bundling all six prebuilt bindings.
 
 Resource-limiter boundary: Floor's `rlimit` mode (`ulimit -v`, default
-768 MB) cannot start Node 24 at all and aborts Bun during a merge; both
-complete at 2 GB and 4 GB. That is the runtimes' address-space reservation,
-not shardpdf (87 MB RSS at 11k pages). A shardpdf child in Floor must use
-the `cgroup` limiter. Details and the table are in
+768 MB) cannot start Node 24 at all on either architecture, and cannot start
+Bun on aarch64. Where the runtime starts, `merge()` completes, after lopdf's
+rayon thread pool was disabled (it was the one shardpdf-side address-space
+consumer, and it panicked spawning threads under the cap; cost 0.16 s to
+0.22 s on 11k pages, RSS unchanged). A shardpdf child in Floor must use the
+`cgroup` limiter. Details and the table are in
 `docs/audits/2026-09-16-consumer-package-smoke.md`.
 
 Not done: step 5, the Floor canary on real shards under the process cap in
