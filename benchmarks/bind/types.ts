@@ -1,6 +1,11 @@
 import type { ScaleName } from "../workload/data.ts";
 
-export type BindEngine = "qpdf" | "shardpdf";
+/**
+ * `shardpdf` drives the low-level sync `Assembly` in-process; `shardpdf-merge`
+ * calls the public async `merge()` facade, which is what a host like Floor
+ * Inspector would import.
+ */
+export type BindEngine = "qpdf" | "shardpdf" | "shardpdf-merge";
 export type BindMode = "merge" | "outline";
 
 export interface BindOutlineEntry {

@@ -19,13 +19,13 @@ const manifestPath = process.argv[4];
 const outputPath = process.argv[5];
 
 if (
-  (engine !== "qpdf" && engine !== "shardpdf") ||
+  (engine !== "qpdf" && engine !== "shardpdf" && engine !== "shardpdf-merge") ||
   (mode !== "merge" && mode !== "outline") ||
   manifestPath === undefined ||
   outputPath === undefined
 ) {
   console.error(
-    "usage: node runner.ts <qpdf|shardpdf> <merge|outline> <manifest> <output>",
+    "usage: node runner.ts <qpdf|shardpdf|shardpdf-merge> <merge|outline> <manifest> <output>",
   );
   process.exit(2);
 }
@@ -71,6 +71,9 @@ async function run(
   if (selectedEngine === "qpdf") {
     return runQpdf(selectedMode, shards, fixture, outPath);
   }
+  if (selectedEngine === "shardpdf-merge") {
+    return runShardpdfMerge(selectedMode, shards, fixture, outPath);
+  }
   return runShardpdf(selectedMode, shards, fixture, outPath);
 }
 
@@ -91,6 +94,42 @@ async function runQpdf(
   } finally {
     if (mergePath !== outPath) await rm(mergePath, { force: true });
   }
+}
+
+/** The public facade, exactly as a host would call it. */
+async function runShardpdfMerge(
+  selectedMode: BindMode,
+  shards: string[],
+  fixture: BindFixtureManifest,
+  outPath: string,
+): Promise<number> {
+  const { merge } = await import("@shardpdf/core");
+  const result = await merge(shards, outPath, {
+    outline:
+      selectedMode === "outline" ? nestOutline(fixture.outline) : undefined,
+  });
+  if (result.pageCount !== fixture.totalPages) {
+    throw new Error(
+      `shardpdf merge produced ${result.pageCount} pages, fixture expects ${fixture.totalPages}`,
+    );
+  }
+  return result.pageCount;
+}
+
+/** Rebuild the nested form the public API takes from the flat fixture list. */
+function nestOutline(flat: BindFixtureManifest["outline"]) {
+  type Node = { title: string; pageIndex: number; children?: Node[] };
+  const roots: Node[] = [];
+  const stack: Node[] = [];
+  for (const entry of flat) {
+    const node: Node = { title: entry.title, pageIndex: entry.pageIndex };
+    stack.length = entry.level;
+    const parent = stack[entry.level - 1];
+    if (parent === undefined) roots.push(node);
+    else (parent.children ??= []).push(node);
+    stack.push(node);
+  }
+  return roots;
 }
 
 async function runShardpdf(

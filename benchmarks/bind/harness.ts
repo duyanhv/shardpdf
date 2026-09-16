@@ -21,7 +21,7 @@ import type {
 
 const execFileP = promisify(execFile);
 const BENCH_DIR = path.resolve(import.meta.dirname, "..");
-const ENGINES: BindEngine[] = ["qpdf", "shardpdf"];
+const ENGINES: BindEngine[] = ["qpdf", "shardpdf", "shardpdf-merge"];
 const MODES: BindMode[] = ["merge", "outline"];
 
 type Check = "pass" | "fail" | "skipped";
@@ -121,7 +121,7 @@ if (!Number.isInteger(iterations) || iterations < 1 || iterations > 20) {
 // baseline was accidentally measured that way, so refuse by default.
 const shardpdfBuild = await shardpdfBuildInfo();
 if (
-  engines.includes("shardpdf") &&
+  engines.some((engine) => engine.startsWith("shardpdf")) &&
   shardpdfBuild.profile !== "release" &&
   !values["allow-debug"]
 ) {
