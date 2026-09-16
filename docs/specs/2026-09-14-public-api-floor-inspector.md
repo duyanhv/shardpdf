@@ -77,8 +77,27 @@ would have made the host's "retry without an outline" rule indistinguishable
 from a broken input. Fixed: every caller-supplied outline problem is now
 `SHARDPDF_INVALID_ARG`; `MALFORMED` is reserved for input PDFs.
 
-Not done: step 5, the Floor canary on real shards under the process cap. See
-`docs/specs/2026-09-15-floor-integration-benchmark-plan.md`.
+Scale and resource boundary: the bind harness now has a `shardpdf-merge`
+engine that calls the public `merge()`. On the 11,164-page `full` fixture
+(Floor's ceiling is 12,000) with a release build, `merge()` peaks at 87 MB
+process-tree RSS and 0.16 s in both merge and merge+outline modes, identical
+to the low-level `Assembly` path and byte-identical output, versus qpdf at
+193 to 201 MB and 0.43 to 1.34 s (`docs/benchmarks/2026-08-07-baseline.md`,
+rerun 2026-09-16). Floor's `EXPORT_MEMORY_CAP_MB` defaults to 768, so the
+facade sits about 9x under the cap Floor already enforces on qpdf.
+
+Type boundary: `smoke/consumer` also compiles the public types under
+`module: esnext` + `moduleResolution: bundler`, the shape of Floor's
+`apps/backend/tsconfig.json`, and passes with Floor's own installed `tsc`
+(7.0.2).
+
+Platform boundary: `smoke/linux/` builds the binding from a clean copy inside
+`node:24-bookworm` and runs the full consumer smoke; CI runs it for amd64 and
+arm64. No Linux result exists from this macOS host (Docker could not pull the
+base image); the first green `linux-smoke` job is the evidence for glibc.
+
+Not done: step 5, the Floor canary on real shards under the process cap in
+the Floor repo. See `docs/specs/2026-09-15-floor-integration-benchmark-plan.md`.
 
 ## Recommendation
 
