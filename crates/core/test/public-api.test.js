@@ -388,70 +388,133 @@ async function withTickCounter(work) {
   }
 }
 
+/**
+ * Repeat `work` until at least `minMs` of wall time has passed, so the tick
+ * counter has something to measure on a fast release build as well as on a
+ * slow debug one. Returns the last result.
+ * @template T
+ * @param {() => Promise<T> | T} work
+ * @param {number} minMs
+ */
+async function repeatFor(work, minMs) {
+  const started = performance.now();
+  let result = await work();
+  while (performance.now() - started < minMs) result = await work();
+  return result;
+}
+
+/**
+ * Liveness assertion that does not depend on build profile or machine speed.
+ * Both sides run the same operation repeatedly for the same minimum wall
+ * time. A synchronous native call cannot yield, so at most one queued tick
+ * fires per repetition. An off-thread call must let the 1 ms interval fire
+ * at least once per 6 ms of wall time (observed: 0.2 to 0.6 ticks per ms
+ * across debug and release builds under Node and Bun).
+ * @param {string} label
+ * @param {{ticks: number, elapsedMs: number}} sync
+ * @param {{ticks: number, elapsedMs: number}} async
+ * @param {number} syncRepetitionsUpperBound
+ */
+function assertOffThread(label, sync, async, syncRepetitionsUpperBound) {
+  assert.ok(
+    sync.ticks <= syncRepetitionsUpperBound,
+    `sync ${label} ticked ${sync.ticks} times in ${sync.elapsedMs.toFixed(1)} ms; a blocking call can tick at most once per repetition (${syncRepetitionsUpperBound})`,
+  );
+  const expected = Math.max(3, Math.floor(async.elapsedMs / 6));
+  assert.ok(
+    async.ticks >= expected,
+    `async ${label} ticked only ${async.ticks} times in ${async.elapsedMs.toFixed(1)} ms (expected >= ${expected})`,
+  );
+}
+
+/** Wall time each liveness sample must cover. */
+const LIVENESS_MS = 30;
+
+/**
+ * Run a sync and an async form of the same operation for LIVENESS_MS each and
+ * assert the async form kept the loop live. The sync counter includes how many
+ * repetitions ran, which bounds the ticks a blocking call could produce.
+ * @param {string} label
+ * @param {() => unknown} syncWork
+ * @param {() => Promise<unknown>} asyncWork
+ */
+async function expectOffThread(label, syncWork, asyncWork) {
+  let syncReps = 0;
+  const sync = await withTickCounter(() =>
+    repeatFor(() => {
+      syncReps++;
+      return syncWork();
+    }, LIVENESS_MS),
+  );
+  const async = await withTickCounter(() => repeatFor(asyncWork, LIVENESS_MS));
+  assertOffThread(label, sync, async, syncReps);
+}
+
 test("sync natives block the event loop; async natives keep it live", async () => {
   const pages = Array.from({ length: LARGE_PAGES }, (_, i) => i);
+  const syncOut = path.join(workDir, "large-sync.pdf");
+  const asyncOut = path.join(workDir, "large-async.pdf");
 
-  const sync = await withTickCounter(() =>
-    extractSelection(largePath, pages, path.join(workDir, "large-sync.pdf")),
+  assert.equal(extractSelection(largePath, pages, syncOut), LARGE_PAGES);
+  assert.equal(
+    await extractSelectionAsync(largePath, pages, asyncOut),
+    LARGE_PAGES,
   );
-  const async = await withTickCounter(() =>
-    extractSelectionAsync(
-      largePath,
-      pages,
-      path.join(workDir, "large-async.pdf"),
-    ),
-  );
-  assert.equal(sync.result, LARGE_PAGES);
-  assert.equal(async.result, LARGE_PAGES);
-  // A synchronous native call cannot yield, so the interval never fires
-  // while it runs (a single tick could be queued before the call starts).
-  assert.ok(sync.ticks <= 1, `sync extract ticked ${sync.ticks} times`);
-  assert.ok(
-    async.ticks >= 5,
-    `async extract ticked only ${async.ticks} times in ${async.elapsedMs.toFixed(1)} ms`,
+  await expectOffThread(
+    "extractSelection",
+    () => extractSelection(largePath, pages, syncOut),
+    () => extractSelectionAsync(largePath, pages, asyncOut),
   );
 
-  const syncCount = await withTickCounter(() => pageCount(largePath));
-  const asyncCount = await withTickCounter(() => pageCountAsync(largePath));
-  assert.equal(syncCount.result, LARGE_PAGES);
-  assert.equal(asyncCount.result, LARGE_PAGES);
-  assert.ok(syncCount.ticks <= 1, `sync pageCount ticked ${syncCount.ticks}`);
-  assert.ok(
-    asyncCount.ticks >= 2,
-    `async pageCount ticked only ${asyncCount.ticks} times in ${asyncCount.elapsedMs.toFixed(1)} ms`,
+  assert.equal(pageCount(largePath), LARGE_PAGES);
+  assert.equal(await pageCountAsync(largePath), LARGE_PAGES);
+  await expectOffThread(
+    "pageCount",
+    () => pageCount(largePath),
+    () => pageCountAsync(largePath),
   );
 });
 
 test("merge, extract, and getPageCount run off-thread", async () => {
+  const pages = Array.from({ length: LARGE_PAGES }, (_, i) => i);
+  const syncOut = path.join(workDir, "facade-sync-extract.pdf");
   const outputPath = path.join(workDir, "facade-live.pdf");
-  const extracted = await withTickCounter(() =>
-    extract(largePath, outputPath, {
-      pages: { start: 0, end: LARGE_PAGES },
-      annotations: "drop",
-    }),
-  );
-  assert.equal(extracted.result.pageCount, LARGE_PAGES);
-  assert.ok(
-    extracted.ticks >= 5,
-    `extract ticked only ${extracted.ticks} times in ${extracted.elapsedMs.toFixed(1)} ms`,
+  const extracted = await extract(largePath, outputPath, {
+    pages: { start: 0, end: LARGE_PAGES },
+    annotations: "drop",
+  });
+  assert.equal(extracted.pageCount, LARGE_PAGES);
+  await expectOffThread(
+    "extract()",
+    () => extractSelection(largePath, pages, syncOut),
+    () =>
+      extract(largePath, outputPath, {
+        pages: { start: 0, end: LARGE_PAGES },
+        annotations: "drop",
+      }),
   );
 
-  const counted = await withTickCounter(() => getPageCount(largePath));
-  assert.equal(counted.result, LARGE_PAGES);
-  assert.ok(
-    counted.ticks >= 2,
-    `getPageCount ticked only ${counted.ticks} times in ${counted.elapsedMs.toFixed(1)} ms`,
+  assert.equal(await getPageCount(largePath), LARGE_PAGES);
+  await expectOffThread(
+    "getPageCount()",
+    () => pageCount(largePath),
+    () => getPageCount(largePath),
   );
 
   const mergedPath = path.join(workDir, "facade-live-merge.pdf");
+  const syncMergePath = path.join(workDir, "facade-sync-merge.pdf");
   const largeBytes = await readFile(largePath);
-  const merged = await withTickCounter(() =>
-    merge([largePath, largeBytes], mergedPath),
-  );
-  assert.equal(merged.result.pageCount, LARGE_PAGES * 2);
-  assert.ok(
-    merged.ticks >= 5,
-    `merge ticked only ${merged.ticks} times in ${merged.elapsedMs.toFixed(1)} ms`,
+  const merged = await merge([largePath, largeBytes], mergedPath);
+  assert.equal(merged.pageCount, LARGE_PAGES * 2);
+  await expectOffThread(
+    "merge()",
+    () => {
+      const a = new Assembly(syncMergePath);
+      a.appendShard(largePath);
+      a.appendShardBytes(largeBytes);
+      a.finalize();
+    },
+    () => merge([largePath, largeBytes], mergedPath),
   );
 });
 

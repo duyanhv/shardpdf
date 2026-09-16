@@ -260,6 +260,9 @@ mod tests {
             build(&[entry("A", 99, 0)], 4),
             Err(AssemblyError::InvalidOutline(_))
         ));
-        assert!(matches!(build(&[], 4), Err(AssemblyError::InvalidOutline(_))));
+        assert!(matches!(
+            build(&[], 4),
+            Err(AssemblyError::InvalidOutline(_))
+        ));
     }
 }
