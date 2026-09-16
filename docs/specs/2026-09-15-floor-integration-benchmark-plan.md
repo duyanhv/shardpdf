@@ -19,6 +19,37 @@ planning, snapshot generation, BullMQ, Redis/S3 caches, uploads, and application
 state transitions remain owned by Floor. Selective extraction is a separate
 decision after assembly has passed its gates.
 
+## Status update 2026-09-16
+
+The "starting point" below describes shardpdf at `024503f`. As of `b92d4f9`
+the following items in this plan are done in the shardpdf repo; the rest is
+Floor-side work.
+
+- Phase 1 step 1: public `merge()`, `extract()`, `getPageCount()` are
+  implemented, off-thread, and frozen behind exported types
+  (`docs/specs/2026-09-14-public-api-floor-inspector.md`).
+- Phase 1 steps 2 and 4: CI's `prebuild` job builds release bindings for six
+  targets; the `package` job bundles them into one tarball and smokes it.
+  Tarball SHA and package manifest recording is still a release-process step.
+- Phase 1 steps 3 and 5: `smoke/consumer/` installs the packed tarball as a
+  `file:` dependency and runs CJS/ESM under Node and Bun, type checks under
+  nodenext and Floor's bundler resolution, a Floor-shaped acceptance script
+  against qpdf, and a release-profile assertion. `smoke/linux/` does the same
+  from a clean in-container build on amd64 and arm64 (CI `linux-smoke`).
+- The bind harness gained a `shardpdf-merge` engine that drives the public
+  facade; it matches the low-level `Assembly` path at 87 MB and 0.22 s on the
+  11,164-page fixture (`docs/benchmarks/2026-08-07-baseline.md`).
+- Limiter finding, relevant to Phase 2's "capped child": Floor's `rlimit`
+  mode cannot start Node 24 under its 768 MB default on either architecture,
+  nor Bun on aarch64. The adapter must use the `cgroup` limiter. lopdf's
+  rayon pool was removed so shardpdf itself adds no thread-pool address
+  space. See `docs/audits/2026-09-16-consumer-package-smoke.md`.
+
+Not done: Phase 2 (backend adapter PR), Phase 3 (real-renderer corpus),
+Phase 4 (comparison runs), Phase 5 (canary). `benchmarks/harness/Dockerfile`
+is still not the integration image; `smoke/linux/Dockerfile` is a
+consumer-smoke image, not a benchmark image.
+
 ## Starting point verified from the repositories
 
 - Floor backend: `4658e375d`, clean at inspection. Root:
