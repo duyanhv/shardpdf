@@ -66,6 +66,16 @@ else
   echo "SKIP floor-acceptance: needs qpdf on PATH"
 fi
 
+step "Floor rlimit limiter (ulimit -v, Linux only; macOS rejects RLIMIT_AS)"
+if [ "$(uname -s)" = "Linux" ]; then
+  for cap in 768 256; do
+    run "node under ulimit -v ${cap}MB" sh -c "ulimit -v $((cap * 1024)); exec node rlimit-probe.cjs"
+    run "bun under ulimit -v ${cap}MB"  sh -c "ulimit -v $((cap * 1024)); exec bun rlimit-probe.cjs"
+  done
+else
+  echo "SKIP rlimit probe on $(uname -s)"
+fi
+
 step "type tests (tsc --noEmit, nodenext, .ts as ESM + .cts as CJS)"
 run "tsc" "$tsc" -p tsconfig.json
 # Floor Inspector compiles with module esnext + moduleResolution bundler.
