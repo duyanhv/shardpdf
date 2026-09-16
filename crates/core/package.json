@@ -4,6 +4,24 @@
   "private": true,
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "native.js",
+    "native.d.ts",
+    "*.node",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
   "napi": {
     "binaryName": "shardpdf-core",
     "targets": [

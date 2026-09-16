@@ -1,0 +1,17 @@
+{
+  "name": "shardpdf-consumer-smoke",
+  "private": true,
+  "description": "Consumes @shardpdf/core from a packed tarball the way an external backend (Bun 1.4 / Node >=24) would. Run ./run.sh.",
+  "type": "commonjs",
+  "scripts": {
+    "test": "./run.sh"
+  },
+  "dependencies": {
+    "@shardpdf/core": "file:./vendor/shardpdf-core.tgz",
+    "pdfkit": "^0.19.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "@types/pdfkit": "^0.17.6"
+  }
+}
