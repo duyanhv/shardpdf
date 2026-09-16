@@ -1,5 +1,13 @@
 export type { BuildInfo, LoadOptions, OutlineEntry } from "./native.js";
-export { Assembly, buildInfo, extractPages } from "./native.js";
+export {
+  Assembly,
+  buildInfo,
+  extractPages,
+  extractSelection,
+  extractSelectionAsync,
+  pageCount,
+  pageCountAsync,
+} from "./native.js";
 
 /**
  * Stable `error.code` values thrown by the native binding. Branch on these
@@ -85,6 +93,12 @@ export declare function assemble(
 
 // ---------------------------------------------------------------------------
 // Operation facade: merge / extract / getPageCount
+//
+// These run their native work off the JavaScript thread (napi async tasks on
+// the libuv threadpool), so the event loop stays live while a document is
+// parsed or written. The synchronous natives (`pageCount`,
+// `extractSelection`, `extractPages`, `Assembly#appendShard` and friends)
+// stay exported for hosts that already isolate work in a child process.
 // ---------------------------------------------------------------------------
 
 /**
@@ -120,9 +134,10 @@ export interface PDFProgress {
 export interface PDFOptions {
   /**
    * Cancellation input. Checked before each input (merge), before the native
-   * call (extract), and again before the output is published. A native call
-   * already in progress runs to completion before the signal is observed;
-   * this is not a hard time or memory limit.
+   * call (extract), and again before the output is published. Each native
+   * task runs on the libuv threadpool and cannot be interrupted: a task
+   * already in flight completes before the signal is observed at the next
+   * checkpoint. This is not a hard time or memory limit.
    */
   signal?: AbortSignal;
   /**

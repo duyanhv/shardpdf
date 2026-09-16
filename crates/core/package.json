@@ -39,7 +39,7 @@
     "fuzz": "rustup run nightly cargo fuzz run append_shard --fuzz-dir fuzz",
     "fuzz:seed": "cargo run --example gen_fuzz_seed",
     "test": "cargo test -p shardpdf-core && node --test \"test/*.test.js\"",
-    "test:bun": "bun test test/api.test.js",
+    "test:bun": "bun test test/api.test.js test/public-api.test.js",
     "typecheck": "tsc --noEmit --allowJs --checkJs --module nodenext --moduleResolution nodenext --target es2022 --types node index.js test/api.test.js test/public-api.test.js test/api-types.ts"
   },
   "devDependencies": {

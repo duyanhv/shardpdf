@@ -38,6 +38,16 @@ never replaced by a partial one. Errors, a throwing `onProgress`, and an
 aborted `signal` remove the temporary file and reject. Cancellation is checked
 between inputs and before publication, not inside a native call.
 
+These three functions run their native work off the JavaScript thread: each
+parse and write is a napi async task on the libuv threadpool, so timers, abort
+handlers, and other requests keep running while a document is processed.
+Measured on a 400-page PDFKit source (debug build, Apple Silicon): a
+`setInterval(fn, 1)` fires 0 times during the synchronous
+`extractSelection()` call (48 ms) and about 25 times during `extract()` over
+the same span, under both Node 24 and Bun 1.4. A task that is already in
+flight cannot be interrupted; an aborted `signal` is observed at the next
+checkpoint after it settles.
+
 `extract` requires `annotations: "drop"` because this release removes every
 `/Annots` entry (links and form widgets), named destinations, and outlines from
 the selected pages. Passing an array selects pages in the given order; repeated
@@ -77,15 +87,37 @@ memory; both return the shard's page count. Call `abort()` to close an
 unfinished assembly; it is idempotent, so it is safe in a `finally` block
 after `finalize()`.
 
-All native calls are synchronous and run on the JavaScript thread. Appending a
-500-page PDFKit shard blocks the event loop for roughly 50 ms in a debug build;
-`assemble()` yields between shards so timers and abort handlers stay live.
+Every native entrypoint comes in two forms. The synchronous form
+(`pageCount`, `extractSelection`, `extractPages`, `Assembly#appendShard`,
+`appendShardBytes`, `finalize`) runs on the JavaScript thread: appending a
+500-page PDFKit shard blocks the event loop for roughly 50 ms in a debug
+build, and `assemble()` yields between shards so timers and abort handlers
+stay live. Keep using these when the host already runs the work in a
+dedicated child process. The `*Async` form (`pageCountAsync`,
+`extractSelectionAsync`, `Assembly#appendShardAsync`, `appendShardBytesAsync`,
+`finalizeAsync`) returns a Promise and runs the same code on the libuv
+threadpool; `merge`, `extract`, and `getPageCount` are built on it. Byte
+inputs to an async call are copied before the task is queued, so the caller
+may reuse or release the buffer immediately. Rejections carry the same
+`SHARDPDF_*` codes, including `SHARDPDF_PANIC` for a panic caught inside the
+task.
+
+An `Assembly` owns one output writer, so at most one operation may run on it
+at a time. While an async call is in flight the assembly is `busy` (a getter),
+and every other method or getter, synchronous or asynchronous, fails with
+`SHARDPDF_INVALID_ARG` ("assembly is busy") until that promise settles.
+`abort()` is the one exception: it marks the assembly consumed at once, the
+in-flight task still settles with its own result, and the writer is closed
+when it does. A rejected `finalizeAsync()` consumes the assembly just like a
+throwing `finalize()`. Invalid arguments are rejected before the writer is
+taken, so they never leave the assembly busy.
 
 ### Untrusted input
 
 Shards you rendered yourself need no limits. If a path or upload from outside
 your process can reach `assemble()`, `appendShard()`, `appendShardBytes()`,
-`extractPages()`, `extractSelection()`, or `pageCount()`,
+`extractPages()`, `extractSelection()`, or `pageCount()` (or their `*Async`
+forms),
 pass `maxDecompressedBytes`: the parser inflates object streams eagerly on
 load, and a small file can otherwise allocate gigabytes before the core sees
 a page. Measured through `new Assembly()` + `appendShard()` in Node:
@@ -147,5 +179,6 @@ semantics and the same annotation, destination, and outline drops as
 out-of-range index is `SHARDPDF_INVALID_ARG`.
 
 `pageCount(input)` parses a path or `Uint8Array` and returns its page count
-without writing anything. Like every other native call it is synchronous:
-the entire document is parsed on the JavaScript thread.
+without writing anything. It is synchronous, parsing the entire document on
+the JavaScript thread; `pageCountAsync(input)` does the same on the
+threadpool and resolves with the count.

@@ -5,28 +5,56 @@ export declare class Assembly {
   /**
    * Appends one complete single-shard PDF; returns its page count.
    * Synchronous: blocks the event loop for the duration of the parse.
+   * `SHARDPDF_INVALID_ARG` if an async call on this assembly is in flight.
    */
   appendShard(shardPath: string): number
   /**
    * Appends one complete single-shard PDF held in memory; returns its
    * page count. The buffer is parsed synchronously and not retained.
+   * `SHARDPDF_INVALID_ARG` if an async call on this assembly is in flight.
    */
   appendShardBytes(bytes: Uint8Array): number
-  /** Total pages appended so far. */
+  /**
+   * `appendShard` on the libuv threadpool. Resolves with the shard's page
+   * count. The assembly is busy until the promise settles: any other call
+   * in the meantime fails with `SHARDPDF_INVALID_ARG`.
+   */
+  appendShardAsync(shardPath: string): Promise<number>
+  /**
+   * `appendShardBytes` on the libuv threadpool. The bytes are copied
+   * before the task is queued, so the caller may reuse the buffer as soon
+   * as this returns. Same busy rule as `appendShardAsync`.
+   */
+  appendShardBytesAsync(bytes: Uint8Array): Promise<number>
+  /**
+   * Total pages appended so far. `SHARDPDF_INVALID_ARG` while an async
+   * call is in flight.
+   */
   get pageCount(): number
   /** Whether `finalize()` or `abort()` has already consumed this assembly. */
   get consumed(): boolean
+  /** Whether an async call on this assembly is in flight. */
+  get busy(): boolean
   /**
    * Closes the partial output without finalizing it. Idempotent: calling
    * it on an already-consumed assembly is a no-op, so `finally` blocks can
-   * call it unconditionally.
+   * call it unconditionally. If an async call is in flight the writer is
+   * closed as soon as that task settles; the task's own promise still
+   * reports its result.
    */
   abort(): void
   /**
    * Writes the assembled document, with optional bookmarks. Consumed.
    * `level` may be omitted per entry (defaults to 0).
+   * `SHARDPDF_INVALID_ARG` if an async call on this assembly is in flight.
    */
   finalize(outline?: Array<OutlineEntry> | undefined | null): void
+  /**
+   * `finalize` on the libuv threadpool. The assembly is consumed once the
+   * promise settles, whether it resolved or rejected. Same busy rule as
+   * `appendShardAsync`.
+   */
+  finalizeAsync(outline?: Array<OutlineEntry> | undefined | null): Promise<void>
 }
 
 export declare function buildInfo(): BuildInfo
@@ -63,6 +91,13 @@ export declare function extractPages(inputPath: string, startPage: number, endPa
 export declare function extractSelection(input: string | Uint8Array, pages: Array<number>, outputPath: string, options?: LoadOptions | undefined | null): number
 
 /**
+ * `extractSelection` on the libuv threadpool. Same arguments, semantics,
+ * and error codes; byte input is copied before the task is queued. Resolves
+ * with the extracted page count.
+ */
+export declare function extractSelectionAsync(input: string | Uint8Array, pages: Array<number>, outputPath: string, options?: LoadOptions | undefined | null): Promise<number>
+
+/**
  * Optional resource limits for parsing shards.
  *
  * `maxDecompressedBytes` bounds how far any one compressed stream may
@@ -95,3 +130,10 @@ export interface OutlineEntry {
  * is written. Synchronous: the whole document is parsed on the JS thread.
  */
 export declare function pageCount(input: string | Uint8Array, options?: LoadOptions | undefined | null): number
+
+/**
+ * Parse `input` (a path or a `Uint8Array`, which is copied) on the libuv
+ * threadpool and resolve with its page count. Rejections carry the same
+ * `SHARDPDF_*` codes as `pageCount`, including `SHARDPDF_PANIC`.
+ */
+export declare function pageCountAsync(input: string | Uint8Array, options?: LoadOptions | undefined | null): Promise<number>

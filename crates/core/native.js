@@ -704,4 +704,6 @@ module.exports.Assembly = nativeBinding.Assembly
 module.exports.buildInfo = nativeBinding.buildInfo
 module.exports.extractPages = nativeBinding.extractPages
 module.exports.extractSelection = nativeBinding.extractSelection
+module.exports.extractSelectionAsync = nativeBinding.extractSelectionAsync
 module.exports.pageCount = nativeBinding.pageCount
+module.exports.pageCountAsync = nativeBinding.pageCountAsync

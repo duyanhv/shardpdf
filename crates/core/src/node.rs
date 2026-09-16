@@ -12,16 +12,38 @@
 //! Errors carry a stable `code` property (see [`ErrorCode`]) so callers can
 //! branch on the class of failure without matching on message text.
 //!
-//! All calls are synchronous and run on the JavaScript thread. A 500-page
-//! shard blocks the event loop for tens of milliseconds; callers that need
-//! liveness should yield between appends (the `assemble()` wrapper does).
+//! Two families of entrypoints are exported:
+//!
+//! - Synchronous calls (`pageCount`, `extractSelection`, `extractPages`,
+//!   `Assembly#appendShard`/`appendShardBytes`/`finalize`) run on the
+//!   JavaScript thread. A 500-page shard blocks the event loop for tens of
+//!   milliseconds; hosts that already run in a dedicated child process use
+//!   these directly.
+//! - `*Async` variants (`pageCountAsync`, `extractSelectionAsync`,
+//!   `Assembly#appendShardAsync`/`appendShardBytesAsync`/`finalizeAsync`)
+//!   return a Promise and run the parse and write on the libuv threadpool
+//!   through napi's [`Task`]. Argument validation happens on the JS thread
+//!   but every failure, including a caught panic, is delivered as a
+//!   rejection carrying the same `SHARDPDF_*` code.
+//!
+//! Byte inputs to async calls are copied into the task before it is queued,
+//! so the worker never reads a JavaScript buffer that the caller may mutate
+//! or that the garbage collector may move or release.
+//!
+//! An `Assembly` owns one output writer. At most one operation may run on it
+//! at a time: while an async call is in flight the assembly is "busy", and
+//! any other call (sync or async) fails with `SHARDPDF_INVALID_ARG` until
+//! the in-flight promise settles.
 
 use crate::assembler::{PdfSource, ShardLoadOptions};
 use crate::{assembler, extract, outline};
-use napi::bindgen_prelude::{FromNapiValue, JsObjectValue, JsValue, Object, Uint8Array, Unknown};
-use napi::ValueType;
+use napi::bindgen_prelude::{
+    AsyncTask, FromNapiValue, JsObjectValue, JsValue, Object, Uint8Array, Undefined, Unknown,
+};
+use napi::{Env, JsError, Task, ValueType};
 use napi_derive::napi;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// Stable error codes exposed as `error.code` on the JavaScript side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +80,10 @@ impl AsRef<str> for ErrorCode {
 }
 
 type Result<T> = napi::Result<T, ErrorCode>;
+
+/// A coded result that has crossed back to the JavaScript thread from a
+/// worker. `napi::Error` is `Send`, so this can be a `Task::Output`.
+type Coded<T> = std::result::Result<T, napi::Error<ErrorCode>>;
 
 /// Runs a binding body, converting an unwinding panic into a coded error.
 /// `AssertUnwindSafe` is sound here because every binding either returns a
@@ -118,6 +144,23 @@ fn consumed() -> napi::Error<ErrorCode> {
     napi::Error::new(ErrorCode::Consumed, "assembly already finalized or aborted")
 }
 
+fn busy() -> napi::Error<ErrorCode> {
+    napi::Error::new(
+        ErrorCode::InvalidArg,
+        "assembly is busy: an async operation is in flight; await it before calling another method",
+    )
+}
+
+/// Converts a worker-side coded error into the JS error object the promise
+/// will reject with. napi's `Task::Output` path only carries a
+/// `napi::Error<Status>`, whose `code` would be `GenericFailure`, so the
+/// coded error is materialised as a JS `Error` (with `code` set from
+/// [`ErrorCode`]) on the JS thread and handed back by reference; napi then
+/// rejects the promise with that exact object.
+fn finish<T>(env: Env, output: Coded<T>) -> napi::Result<T> {
+    output.map_err(|e| napi::Error::from(JsError::from(e).into_unknown(env)))
+}
+
 fn invalid_arg(name: &str, expected: &str, value: &Unknown) -> napi::Error<ErrorCode> {
     let got = value
         .get_type()
@@ -176,6 +219,30 @@ fn input_arg(value: Unknown, name: &str) -> Result<InputArg> {
                 .map_err(|e| bad_arg(format!("{name} must be a Uint8Array: {}", e.reason)))
         }
         _ => Err(invalid_arg(name, "a path string or a Uint8Array", &value)),
+    }
+}
+
+/// A PDF source owned by an async task: the path string or a private copy of
+/// the caller's bytes. Copying keeps the worker independent of the
+/// JavaScript heap for the lifetime of the task.
+enum OwnedInput {
+    Path(String),
+    Bytes(Vec<u8>),
+}
+
+impl OwnedInput {
+    fn from_arg(arg: InputArg) -> Self {
+        match arg {
+            InputArg::Path(p) => OwnedInput::Path(p),
+            InputArg::Bytes(b) => OwnedInput::Bytes(b.to_vec()),
+        }
+    }
+
+    fn as_source(&self) -> PdfSource<'_> {
+        match self {
+            OwnedInput::Path(p) => PdfSource::Path(std::path::Path::new(p)),
+            OwnedInput::Bytes(b) => PdfSource::Bytes(b.as_slice()),
+        }
     }
 }
 
@@ -479,14 +546,129 @@ pub fn page_count(input: Unknown, options: Option<Unknown>) -> Result<u32> {
     guard(|| {
         let input = input_arg(input, "input")?;
         let load_options = load_options_arg(options)?;
-        let count = assembler::page_count(input.as_source(), &load_options).map_err(to_napi_err)?;
-        u32::try_from(count).map_err(|_| {
-            napi::Error::new(
-                ErrorCode::Malformed,
-                format!("page count {count} exceeds u32"),
-            )
-        })
+        count_pages(input.as_source(), &load_options)
     })
+}
+
+fn count_pages(source: PdfSource<'_>, load_options: &ShardLoadOptions) -> Result<u32> {
+    let count = assembler::page_count(source, load_options).map_err(to_napi_err)?;
+    u32::try_from(count).map_err(|_| {
+        napi::Error::new(
+            ErrorCode::Malformed,
+            format!("page count {count} exceeds u32"),
+        )
+    })
+}
+
+/// Off-thread `pageCount`. Argument problems are captured on the JS thread
+/// and delivered as a rejection so the call always returns a Promise.
+pub struct PageCountTask {
+    job: Option<Coded<(OwnedInput, ShardLoadOptions)>>,
+}
+
+#[napi]
+impl Task for PageCountTask {
+    type Output = Coded<u32>;
+    type JsValue = u32;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let job = self.job.take();
+        Ok(guard(|| {
+            let (input, load_options) = job.expect("compute runs once")?;
+            count_pages(input.as_source(), &load_options)
+        }))
+    }
+
+    fn resolve(&mut self, env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        finish(env, output)
+    }
+}
+
+/// Parse `input` (a path or a `Uint8Array`, which is copied) on the libuv
+/// threadpool and resolve with its page count. Rejections carry the same
+/// `SHARDPDF_*` codes as `pageCount`, including `SHARDPDF_PANIC`.
+#[napi(
+    catch_unwind,
+    ts_args_type = "input: string | Uint8Array, options?: LoadOptions | undefined | null",
+    ts_return_type = "Promise<number>"
+)]
+pub fn page_count_async(input: Unknown, options: Option<Unknown>) -> AsyncTask<PageCountTask> {
+    let job = guard(|| {
+        let input = OwnedInput::from_arg(input_arg(input, "input")?);
+        let load_options = load_options_arg(options)?;
+        Ok((input, load_options))
+    });
+    AsyncTask::new(PageCountTask { job: Some(job) })
+}
+
+/// Off-thread `extractSelection`.
+pub struct ExtractSelectionTask {
+    job: Option<Coded<ExtractJob>>,
+}
+
+struct ExtractJob {
+    input: OwnedInput,
+    pages: Vec<usize>,
+    output_path: String,
+    load_options: ShardLoadOptions,
+}
+
+#[napi]
+impl Task for ExtractSelectionTask {
+    type Output = Coded<u32>;
+    type JsValue = u32;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let job = self.job.take();
+        Ok(guard(|| {
+            let ExtractJob {
+                input,
+                pages,
+                output_path,
+                load_options,
+            } = job.expect("compute runs once")?;
+            extract::extract_selection(
+                input.as_source(),
+                &pages,
+                std::path::Path::new(&output_path),
+                &load_options,
+            )
+            .map_err(to_napi_err)
+        }))
+    }
+
+    fn resolve(&mut self, env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        finish(env, output)
+    }
+}
+
+/// `extractSelection` on the libuv threadpool. Same arguments, semantics,
+/// and error codes; byte input is copied before the task is queued. Resolves
+/// with the extracted page count.
+#[napi(
+    catch_unwind,
+    ts_args_type = "input: string | Uint8Array, pages: Array<number>, outputPath: string, options?: LoadOptions | undefined | null",
+    ts_return_type = "Promise<number>"
+)]
+pub fn extract_selection_async(
+    input: Unknown,
+    pages: Unknown,
+    output_path: Unknown,
+    options: Option<Unknown>,
+) -> AsyncTask<ExtractSelectionTask> {
+    let job = guard(|| {
+        let input = OwnedInput::from_arg(input_arg(input, "input")?);
+        let pages = pages_arg(pages)?;
+        let output_path = path_arg(output_path, "outputPath")?;
+        let load_options = load_options_arg(options)?;
+        Ok(ExtractJob {
+            input,
+            pages,
+            output_path,
+            load_options,
+        })
+    });
+    AsyncTask::new(ExtractSelectionTask { job: Some(job) })
 }
 
 /// One bookmark in the document outline (flat preorder list; `level` gives
@@ -500,9 +682,151 @@ pub struct OutlineEntry {
     pub level: Option<u32>,
 }
 
+/// Ownership state of an `Assembly`'s writer.
+enum Slot {
+    /// Idle on the JS thread; sync and async methods may take it.
+    Ready(assembler::Assembly),
+    /// Moved into an async task; every other call is rejected until the
+    /// task's `finally` hands it back (or drops it after `abort()`).
+    Busy,
+    /// `finalize()`/`abort()` ran (or `abort()` was called while busy).
+    Consumed,
+}
+
+type SharedSlot = Arc<Mutex<Slot>>;
+
+/// The mutex is only ever locked on the JS thread (worker tasks own the
+/// writer outright while they run), so contention is impossible; poisoning
+/// after a caught panic is tolerated because the slot's enum state is
+/// always coherent.
+fn lock_slot(slot: &SharedSlot) -> MutexGuard<'_, Slot> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Moves the writer out for an async task, leaving the slot `Busy`.
+fn take_ready(slot: &SharedSlot) -> Result<assembler::Assembly> {
+    let mut guard = lock_slot(slot);
+    match &*guard {
+        Slot::Ready(_) => {}
+        Slot::Busy => return Err(busy()),
+        Slot::Consumed => return Err(consumed()),
+    }
+    match std::mem::replace(&mut *guard, Slot::Busy) {
+        Slot::Ready(inner) => Ok(inner),
+        _ => unreachable!("checked above"),
+    }
+}
+
+/// Returns a writer borrowed by an async append; drops it if `abort()` ran
+/// while the task was in flight.
+fn give_back(slot: &SharedSlot, inner: assembler::Assembly) {
+    let mut guard = lock_slot(slot);
+    if matches!(*guard, Slot::Busy) {
+        *guard = Slot::Ready(inner);
+    }
+}
+
+enum AppendInput {
+    Path(String),
+    Bytes(Vec<u8>),
+}
+
+/// Off-thread `appendShard`/`appendShardBytes`. Owns the writer for the
+/// duration of the task and returns it in `finally`, which napi runs on the
+/// JS thread after the promise settles, whether or not `compute` ran.
+pub struct AppendShardTask {
+    slot: SharedSlot,
+    job: Option<Coded<AppendInput>>,
+    inner: Option<assembler::Assembly>,
+}
+
+#[napi]
+impl Task for AppendShardTask {
+    type Output = Coded<u32>;
+    type JsValue = u32;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let job = self.job.take();
+        let inner = &mut self.inner;
+        Ok(guard(|| {
+            let input = job.expect("compute runs once")?;
+            let inner = inner.as_mut().ok_or_else(consumed)?;
+            match input {
+                AppendInput::Path(p) => inner.append_shard_file(std::path::Path::new(&p)),
+                AppendInput::Bytes(b) => inner.append_shard_bytes(&b),
+            }
+            .map_err(to_napi_err)
+        }))
+    }
+
+    fn resolve(&mut self, env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        finish(env, output)
+    }
+
+    fn finally(self, _env: Env) -> napi::Result<()> {
+        if let Some(inner) = self.inner {
+            give_back(&self.slot, inner);
+        }
+        Ok(())
+    }
+}
+
+/// Off-thread `finalize`. The writer is consumed whether or not the write
+/// succeeds, exactly like the sync method.
+pub struct FinalizeTask {
+    slot: SharedSlot,
+    job: Option<Coded<Option<Vec<outline::OutlineEntry>>>>,
+    inner: Option<assembler::Assembly>,
+    owns_slot: bool,
+}
+
+#[napi]
+impl Task for FinalizeTask {
+    type Output = Coded<()>;
+    type JsValue = Undefined;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let job = self.job.take();
+        let inner = self.inner.take();
+        Ok(guard(|| {
+            let entries = job.expect("compute runs once")?;
+            inner
+                .ok_or_else(consumed)?
+                .finalize(entries.as_deref())
+                .map_err(to_napi_err)
+        }))
+    }
+
+    fn resolve(&mut self, env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        finish(env, output)
+    }
+
+    fn finally(self, _env: Env) -> napi::Result<()> {
+        if self.owns_slot {
+            let mut guard = lock_slot(&self.slot);
+            if matches!(*guard, Slot::Busy) {
+                *guard = Slot::Consumed;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[napi]
 pub struct Assembly {
-    inner: Option<assembler::Assembly>,
+    slot: SharedSlot,
+}
+
+impl Assembly {
+    /// Runs `body` against the idle writer on the JS thread.
+    fn with_ready<T>(&self, body: impl FnOnce(&mut assembler::Assembly) -> Result<T>) -> Result<T> {
+        let mut guard = lock_slot(&self.slot);
+        match &mut *guard {
+            Slot::Ready(inner) => body(inner),
+            Slot::Busy => Err(busy()),
+            Slot::Consumed => Err(consumed()),
+        }
+    }
 }
 
 #[napi]
@@ -517,76 +841,158 @@ impl Assembly {
             let output_path = path_arg(output_path, "outputPath")?;
             let load_options = load_options_arg(options)?;
             Ok(Assembly {
-                inner: Some(
+                slot: Arc::new(Mutex::new(Slot::Ready(
                     assembler::Assembly::with_options(output_path, load_options)
                         .map_err(to_napi_err)?,
-                ),
+                ))),
             })
         })
     }
 
     /// Appends one complete single-shard PDF; returns its page count.
     /// Synchronous: blocks the event loop for the duration of the parse.
+    /// `SHARDPDF_INVALID_ARG` if an async call on this assembly is in flight.
     #[napi(catch_unwind, ts_args_type = "shardPath: string")]
-    pub fn append_shard(&mut self, shard_path: Unknown) -> Result<u32> {
+    pub fn append_shard(&self, shard_path: Unknown) -> Result<u32> {
         guard(|| {
             let shard_path = path_arg(shard_path, "shardPath")?;
-            self.inner
-                .as_mut()
-                .ok_or_else(consumed)?
-                .append_shard_file(std::path::Path::new(&shard_path))
-                .map_err(to_napi_err)
+            self.with_ready(|inner| {
+                inner
+                    .append_shard_file(std::path::Path::new(&shard_path))
+                    .map_err(to_napi_err)
+            })
         })
     }
 
     /// Appends one complete single-shard PDF held in memory; returns its
     /// page count. The buffer is parsed synchronously and not retained.
+    /// `SHARDPDF_INVALID_ARG` if an async call on this assembly is in flight.
     #[napi(catch_unwind, ts_args_type = "bytes: Uint8Array")]
-    pub fn append_shard_bytes(&mut self, bytes: Unknown) -> Result<u32> {
+    pub fn append_shard_bytes(&self, bytes: Unknown) -> Result<u32> {
         guard(|| {
             let bytes = bytes_arg(bytes, "bytes")?;
-            self.inner
-                .as_mut()
-                .ok_or_else(consumed)?
-                .append_shard_bytes(bytes.as_ref())
-                .map_err(to_napi_err)
+            self.with_ready(|inner| {
+                inner
+                    .append_shard_bytes(bytes.as_ref())
+                    .map_err(to_napi_err)
+            })
         })
     }
 
-    /// Total pages appended so far.
+    /// `appendShard` on the libuv threadpool. Resolves with the shard's page
+    /// count. The assembly is busy until the promise settles: any other call
+    /// in the meantime fails with `SHARDPDF_INVALID_ARG`.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "shardPath: string",
+        ts_return_type = "Promise<number>"
+    )]
+    pub fn append_shard_async(&self, shard_path: Unknown) -> AsyncTask<AppendShardTask> {
+        self.spawn_append(guard(|| {
+            path_arg(shard_path, "shardPath").map(AppendInput::Path)
+        }))
+    }
+
+    /// `appendShardBytes` on the libuv threadpool. The bytes are copied
+    /// before the task is queued, so the caller may reuse the buffer as soon
+    /// as this returns. Same busy rule as `appendShardAsync`.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "bytes: Uint8Array",
+        ts_return_type = "Promise<number>"
+    )]
+    pub fn append_shard_bytes_async(&self, bytes: Unknown) -> AsyncTask<AppendShardTask> {
+        self.spawn_append(guard(|| {
+            bytes_arg(bytes, "bytes").map(|b| AppendInput::Bytes(b.to_vec()))
+        }))
+    }
+
+    /// Total pages appended so far. `SHARDPDF_INVALID_ARG` while an async
+    /// call is in flight.
     #[napi(getter, catch_unwind)]
     pub fn page_count(&self) -> Result<u32> {
-        guard(|| Ok(self.inner.as_ref().ok_or_else(consumed)?.page_count() as u32))
+        guard(|| self.with_ready(|inner| Ok(inner.page_count() as u32)))
     }
 
     /// Whether `finalize()` or `abort()` has already consumed this assembly.
     #[napi(getter)]
     pub fn consumed(&self) -> bool {
-        self.inner.is_none()
+        matches!(*lock_slot(&self.slot), Slot::Consumed)
+    }
+
+    /// Whether an async call on this assembly is in flight.
+    #[napi(getter)]
+    pub fn busy(&self) -> bool {
+        matches!(*lock_slot(&self.slot), Slot::Busy)
     }
 
     /// Closes the partial output without finalizing it. Idempotent: calling
     /// it on an already-consumed assembly is a no-op, so `finally` blocks can
-    /// call it unconditionally.
+    /// call it unconditionally. If an async call is in flight the writer is
+    /// closed as soon as that task settles; the task's own promise still
+    /// reports its result.
     #[napi(catch_unwind)]
-    pub fn abort(&mut self) {
-        self.inner.take();
+    pub fn abort(&self) {
+        *lock_slot(&self.slot) = Slot::Consumed;
     }
 
     /// Writes the assembled document, with optional bookmarks. Consumed.
     /// `level` may be omitted per entry (defaults to 0).
+    /// `SHARDPDF_INVALID_ARG` if an async call on this assembly is in flight.
     #[napi(
         catch_unwind,
         ts_args_type = "outline?: Array<OutlineEntry> | undefined | null"
     )]
-    pub fn finalize(&mut self, outline: Option<Unknown>) -> Result<()> {
+    pub fn finalize(&self, outline: Option<Unknown>) -> Result<()> {
         guard(|| {
             let entries = outline_arg(outline)?;
-            self.inner
-                .take()
-                .ok_or_else(consumed)?
-                .finalize(entries.as_deref())
-                .map_err(to_napi_err)
+            let inner = take_ready(&self.slot)?;
+            *lock_slot(&self.slot) = Slot::Consumed;
+            inner.finalize(entries.as_deref()).map_err(to_napi_err)
+        })
+    }
+
+    /// `finalize` on the libuv threadpool. The assembly is consumed once the
+    /// promise settles, whether it resolved or rejected. Same busy rule as
+    /// `appendShardAsync`.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "outline?: Array<OutlineEntry> | undefined | null",
+        ts_return_type = "Promise<void>"
+    )]
+    pub fn finalize_async(&self, outline: Option<Unknown>) -> AsyncTask<FinalizeTask> {
+        let job = guard(|| outline_arg(outline));
+        let (inner, owns_slot, job) = match job {
+            Ok(entries) => match take_ready(&self.slot) {
+                Ok(inner) => (Some(inner), true, Ok(entries)),
+                Err(e) => (None, false, Err(e)),
+            },
+            Err(e) => (None, false, Err(e)),
+        };
+        AsyncTask::new(FinalizeTask {
+            slot: self.slot.clone(),
+            job: Some(job),
+            inner,
+            owns_slot,
+        })
+    }
+}
+
+impl Assembly {
+    fn spawn_append(&self, job: Coded<AppendInput>) -> AsyncTask<AppendShardTask> {
+        // Only take the writer once the argument is valid, so a bad argument
+        // never leaves the assembly busy.
+        let (inner, job) = match job {
+            Ok(input) => match take_ready(&self.slot) {
+                Ok(inner) => (Some(inner), Ok(input)),
+                Err(e) => (None, Err(e)),
+            },
+            Err(e) => (None, Err(e)),
+        };
+        AsyncTask::new(AppendShardTask {
+            slot: self.slot.clone(),
+            job: Some(job),
+            inner,
         })
     }
 }
@@ -612,5 +1018,37 @@ mod tests {
         assert_eq!(guard(|| Ok(3)).unwrap(), 3);
         let err = guard::<()>(|| Err(consumed())).unwrap_err();
         assert_eq!(err.status, ErrorCode::Consumed);
+    }
+
+    #[test]
+    fn slot_enforces_exclusive_access() {
+        let dir = std::env::temp_dir().join(format!("shardpdf-slot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("out.pdf");
+        let slot: SharedSlot = Arc::new(Mutex::new(Slot::Ready(
+            assembler::Assembly::new(&out).unwrap(),
+        )));
+
+        let inner = take_ready(&slot).unwrap();
+        assert!(matches!(*lock_slot(&slot), Slot::Busy));
+        assert_eq!(
+            take_ready(&slot).err().map(|e| e.status),
+            Some(ErrorCode::InvalidArg)
+        );
+
+        give_back(&slot, inner);
+        assert!(matches!(*lock_slot(&slot), Slot::Ready(_)));
+
+        // abort() while busy wins: the returned writer is dropped.
+        let inner = take_ready(&slot).unwrap();
+        *lock_slot(&slot) = Slot::Consumed;
+        give_back(&slot, inner);
+        assert!(matches!(*lock_slot(&slot), Slot::Consumed));
+        assert_eq!(
+            take_ready(&slot).err().map(|e| e.status),
+            Some(ErrorCode::Consumed)
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -97,9 +97,12 @@ async function assemble(input) {
 // ---------------------------------------------------------------------------
 // Public operation facade: merge / extract / getPageCount.
 //
-// Built on the native `pageCount`, `extractSelection`, and
-// `Assembly#appendShardBytes` entrypoints. Byte inputs go straight to the
-// parser; nothing is spooled to disk.
+// Built on the off-thread natives `pageCountAsync`, `extractSelectionAsync`,
+// and `Assembly#appendShardAsync`/`appendShardBytesAsync`/`finalizeAsync`,
+// which run the parse and write on the libuv threadpool so the event loop
+// stays live during each call. Byte inputs are copied into the native task;
+// nothing is spooled to disk. The synchronous natives remain exported for
+// hosts that already run in a dedicated child process.
 // ---------------------------------------------------------------------------
 
 /**
@@ -305,8 +308,8 @@ async function merge(inputs, output, options) {
       const startPageIndex = pageCount;
       const inputPages =
         source.bytes !== undefined
-          ? assembly.appendShardBytes(source.bytes)
-          : assembly.appendShard(source.path);
+          ? await assembly.appendShardBytesAsync(source.bytes)
+          : await assembly.appendShardAsync(source.path);
       pageCount += inputPages;
       inputResults.push({ pageCount: inputPages, startPageIndex });
       onProgress?.({
@@ -315,10 +318,9 @@ async function merge(inputs, output, options) {
         total: sources.length,
         pageCount,
       });
-      if (index + 1 < sources.length) await yieldToEventLoop();
     }
     signal?.throwIfAborted();
-    assembly.finalize(flatOutline);
+    await assembly.finalizeAsync(flatOutline);
     signal?.throwIfAborted();
     await rename(partialPath, outputPath);
     const { size } = await stat(outputPath);
@@ -391,10 +393,10 @@ function resolveSelection(pages, sourcePageCount) {
 /**
  * @param {{path?: string, bytes?: Uint8Array}} source
  * @param {number | undefined} maxDecompressedBytes
- * @returns {number}
+ * @returns {Promise<number>}
  */
 function countPages(source, maxDecompressedBytes) {
-  return nativeBinding.pageCount(
+  return nativeBinding.pageCountAsync(
     /** @type {string | Uint8Array} */ (source.bytes ?? source.path),
     loadOptions(maxDecompressedBytes),
   );
@@ -414,7 +416,7 @@ async function getPageCount(input, options) {
     "getPageCount",
   );
   signal?.throwIfAborted();
-  return countPages(source, maxDecompressedBytes);
+  return await countPages(source, maxDecompressedBytes);
 }
 
 /**
@@ -447,13 +449,13 @@ async function extract(input, output, options) {
   }
 
   signal?.throwIfAborted();
-  const sourcePageCount = countPages(source, maxDecompressedBytes);
+  const sourcePageCount = await countPages(source, maxDecompressedBytes);
   const selection = resolveSelection(pages, sourcePageCount);
 
   signal?.throwIfAborted();
   const partialPath = partialPathFor(outputPath);
   try {
-    const extracted = nativeBinding.extractSelection(
+    const extracted = await nativeBinding.extractSelectionAsync(
       /** @type {string | Uint8Array} */ (source.bytes ?? source.path),
       selection,
       partialPath,
@@ -483,6 +485,10 @@ Object.assign(module.exports, nativeBinding);
 // Keep explicit assignments so Node's CommonJS lexer exposes named ESM imports.
 module.exports.Assembly = nativeBinding.Assembly;
 module.exports.extractPages = nativeBinding.extractPages;
+module.exports.extractSelection = nativeBinding.extractSelection;
+module.exports.extractSelectionAsync = nativeBinding.extractSelectionAsync;
+module.exports.pageCount = nativeBinding.pageCount;
+module.exports.pageCountAsync = nativeBinding.pageCountAsync;
 module.exports.buildInfo = nativeBinding.buildInfo;
 module.exports.assemble = assemble;
 module.exports.merge = merge;

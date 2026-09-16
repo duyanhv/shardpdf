@@ -15,7 +15,16 @@ const { after, before, test } = require("node:test");
 const { promisify } = require("node:util");
 const { pathToFileURL } = require("node:url");
 const PDFDocument = require("pdfkit");
-const { extract, getPageCount, merge } = require("..");
+const {
+  Assembly,
+  extract,
+  extractSelection,
+  extractSelectionAsync,
+  getPageCount,
+  merge,
+  pageCount,
+  pageCountAsync,
+} = require("..");
 
 const execFileP = promisify(execFile);
 
@@ -24,6 +33,10 @@ let workDir = "";
 /** @type {string[]} */
 let chunkPaths = [];
 const CHUNK_PAGES = [3, 2, 4];
+/** Pages in the source used to prove the event loop stays live. */
+const LARGE_PAGES = 400;
+/** @type {string} */
+let largePath = "";
 
 before(async () => {
   workDir = await mkdtemp(path.join(tmpdir(), "shardpdf-public-api-"));
@@ -31,6 +44,11 @@ before(async () => {
     CHUNK_PAGES.map((pages, index) =>
       writePdfkitPdf(path.join(workDir, `chunk-${index}.pdf`), pages, index),
     ),
+  );
+  largePath = await writePdfkitPdf(
+    path.join(workDir, "large.pdf"),
+    LARGE_PAGES,
+    0,
   );
 });
 after(() => rm(workDir, { recursive: true, force: true }));
@@ -40,6 +58,10 @@ test("exposes merge, extract, and getPageCount to ESM consumers", async () => {
   assert.equal(core.merge, merge);
   assert.equal(core.extract, extract);
   assert.equal(core.getPageCount, getPageCount);
+  assert.equal(typeof core.pageCount, "function");
+  assert.equal(typeof core.pageCountAsync, "function");
+  assert.equal(typeof core.extractSelection, "function");
+  assert.equal(typeof core.extractSelectionAsync, "function");
 });
 
 test("merge accepts path, file URL, and byte inputs and writes a nested outline", async () => {
@@ -340,6 +362,209 @@ test("extract observes cancellation and preserves prior output", async () => {
   );
   assert.equal(await readFile(outputPath, "utf8"), "prior output");
   assert.deepEqual(await partialsFor(outputPath), []);
+});
+
+// ---------------------------------------------------------------------------
+// Off-thread execution
+// ---------------------------------------------------------------------------
+
+/**
+ * Run `work` while a 1 ms interval counts how often the event loop turned.
+ * @template T
+ * @param {() => Promise<T> | T} work
+ * @returns {Promise<{result: T, ticks: number, elapsedMs: number}>}
+ */
+async function withTickCounter(work) {
+  let ticks = 0;
+  const timer = setInterval(() => {
+    ticks++;
+  }, 1);
+  const started = performance.now();
+  try {
+    const result = await work();
+    return { result, ticks, elapsedMs: performance.now() - started };
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+test("sync natives block the event loop; async natives keep it live", async () => {
+  const pages = Array.from({ length: LARGE_PAGES }, (_, i) => i);
+
+  const sync = await withTickCounter(() =>
+    extractSelection(largePath, pages, path.join(workDir, "large-sync.pdf")),
+  );
+  const async = await withTickCounter(() =>
+    extractSelectionAsync(
+      largePath,
+      pages,
+      path.join(workDir, "large-async.pdf"),
+    ),
+  );
+  assert.equal(sync.result, LARGE_PAGES);
+  assert.equal(async.result, LARGE_PAGES);
+  // A synchronous native call cannot yield, so the interval never fires
+  // while it runs (a single tick could be queued before the call starts).
+  assert.ok(sync.ticks <= 1, `sync extract ticked ${sync.ticks} times`);
+  assert.ok(
+    async.ticks >= 5,
+    `async extract ticked only ${async.ticks} times in ${async.elapsedMs.toFixed(1)} ms`,
+  );
+
+  const syncCount = await withTickCounter(() => pageCount(largePath));
+  const asyncCount = await withTickCounter(() => pageCountAsync(largePath));
+  assert.equal(syncCount.result, LARGE_PAGES);
+  assert.equal(asyncCount.result, LARGE_PAGES);
+  assert.ok(syncCount.ticks <= 1, `sync pageCount ticked ${syncCount.ticks}`);
+  assert.ok(
+    asyncCount.ticks >= 2,
+    `async pageCount ticked only ${asyncCount.ticks} times in ${asyncCount.elapsedMs.toFixed(1)} ms`,
+  );
+});
+
+test("merge, extract, and getPageCount run off-thread", async () => {
+  const outputPath = path.join(workDir, "facade-live.pdf");
+  const extracted = await withTickCounter(() =>
+    extract(largePath, outputPath, {
+      pages: { start: 0, end: LARGE_PAGES },
+      annotations: "drop",
+    }),
+  );
+  assert.equal(extracted.result.pageCount, LARGE_PAGES);
+  assert.ok(
+    extracted.ticks >= 5,
+    `extract ticked only ${extracted.ticks} times in ${extracted.elapsedMs.toFixed(1)} ms`,
+  );
+
+  const counted = await withTickCounter(() => getPageCount(largePath));
+  assert.equal(counted.result, LARGE_PAGES);
+  assert.ok(
+    counted.ticks >= 2,
+    `getPageCount ticked only ${counted.ticks} times in ${counted.elapsedMs.toFixed(1)} ms`,
+  );
+
+  const mergedPath = path.join(workDir, "facade-live-merge.pdf");
+  const largeBytes = await readFile(largePath);
+  const merged = await withTickCounter(() =>
+    merge([largePath, largeBytes], mergedPath),
+  );
+  assert.equal(merged.result.pageCount, LARGE_PAGES * 2);
+  assert.ok(
+    merged.ticks >= 5,
+    `merge ticked only ${merged.ticks} times in ${merged.elapsedMs.toFixed(1)} ms`,
+  );
+});
+
+test("an Assembly rejects overlapping calls while an async task is in flight", async () => {
+  const assembly = new Assembly(path.join(workDir, "overlap.partial.pdf"));
+  try {
+    const inFlight = assembly.appendShardAsync(largePath);
+    assert.equal(assembly.busy, true);
+    assert.equal(assembly.consumed, false);
+
+    const busy = { code: "SHARDPDF_INVALID_ARG", message: /busy/ };
+    assert.throws(() => assembly.appendShard(chunkPaths[0]), busy);
+    assert.throws(() => assembly.appendShardBytes(new Uint8Array(1)), busy);
+    assert.throws(() => assembly.finalize(), busy);
+    assert.throws(() => assembly.pageCount, busy);
+    await assert.rejects(assembly.appendShardAsync(chunkPaths[0]), busy);
+    await assert.rejects(
+      assembly.appendShardBytesAsync(new Uint8Array(1)),
+      busy,
+    );
+    await assert.rejects(assembly.finalizeAsync(), busy);
+
+    assert.equal(await inFlight, LARGE_PAGES);
+    assert.equal(assembly.busy, false);
+    assert.equal(assembly.pageCount, LARGE_PAGES);
+
+    // Once idle again, sync and async calls both work.
+    assert.equal(assembly.appendShard(chunkPaths[0]), CHUNK_PAGES[0]);
+    assert.equal(
+      await assembly.appendShardBytesAsync(await readFile(chunkPaths[1])),
+      CHUNK_PAGES[1],
+    );
+    await assembly.finalizeAsync([{ title: "top", pageIndex: 0, level: 0 }]);
+    assert.equal(assembly.consumed, true);
+    await assert.rejects(assembly.finalizeAsync(), {
+      code: "SHARDPDF_CONSUMED",
+    });
+    assert.throws(() => assembly.appendShard(chunkPaths[0]), {
+      code: "SHARDPDF_CONSUMED",
+    });
+  } finally {
+    assembly.abort();
+  }
+});
+
+test("abort() during an in-flight async append settles the task and consumes the assembly", async () => {
+  const assembly = new Assembly(path.join(workDir, "abort-busy.partial.pdf"));
+  const inFlight = assembly.appendShardAsync(largePath);
+  assembly.abort();
+  assert.equal(await inFlight, LARGE_PAGES);
+  assert.equal(assembly.consumed, true);
+  assert.equal(assembly.busy, false);
+  await assert.rejects(assembly.appendShardAsync(chunkPaths[0]), {
+    code: "SHARDPDF_CONSUMED",
+  });
+});
+
+test("async natives reject with SHARDPDF_* codes and leave the assembly usable", async () => {
+  await assert.rejects(pageCountAsync(path.join(workDir, "missing.pdf")), {
+    code: "SHARDPDF_IO",
+  });
+  await assert.rejects(pageCountAsync(asAny(42)), {
+    code: "SHARDPDF_INVALID_ARG",
+  });
+  const corrupt = path.join(workDir, "corrupt-async.pdf");
+  await writeFile(corrupt, "not a PDF");
+  await assert.rejects(
+    extractSelectionAsync(corrupt, [0], path.join(workDir, "never.pdf")),
+    { code: "SHARDPDF_PDF_PARSE" },
+  );
+  await assert.rejects(
+    extractSelectionAsync(chunkPaths[0], [0, 0], path.join(workDir, "n.pdf")),
+    { code: "SHARDPDF_INVALID_ARG" },
+  );
+  await assert.rejects(
+    extractSelectionAsync(chunkPaths[0], [99], path.join(workDir, "n.pdf")),
+    { code: "SHARDPDF_INVALID_ARG" },
+  );
+
+  const assembly = new Assembly(path.join(workDir, "async-errors.partial.pdf"));
+  try {
+    await assert.rejects(assembly.appendShardAsync(corrupt), {
+      code: "SHARDPDF_PDF_PARSE",
+    });
+    // A bad argument never takes the writer, so the assembly stays idle.
+    await assert.rejects(assembly.appendShardAsync(asAny(null)), {
+      code: "SHARDPDF_INVALID_ARG",
+    });
+    await assert.rejects(assembly.finalizeAsync(asAny("nope")), {
+      code: "SHARDPDF_INVALID_ARG",
+    });
+    assert.equal(assembly.busy, false);
+    assert.equal(assembly.consumed, false);
+    assert.equal(
+      await assembly.appendShardAsync(chunkPaths[0]),
+      CHUNK_PAGES[0],
+    );
+    // A failed finalize still consumes, like the sync method.
+    await assert.rejects(
+      assembly.finalizeAsync([{ title: "x", pageIndex: 99, level: 0 }]),
+      { code: "SHARDPDF_MALFORMED" },
+    );
+    assert.equal(assembly.consumed, true);
+  } finally {
+    assembly.abort();
+  }
+});
+
+test("async byte inputs are copied: mutating the buffer after the call is harmless", async () => {
+  const bytes = await readFile(chunkPaths[2]);
+  const promise = pageCountAsync(bytes);
+  bytes.fill(0);
+  assert.equal(await promise, CHUNK_PAGES[2]);
 });
 
 /**
