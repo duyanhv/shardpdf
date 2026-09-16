@@ -1,7 +1,9 @@
 # Public API proposal, grounded in Floor Inspector
 
-Date: 2026-09-14. Status: **proposal; the API below is not implemented**.
-Inspected shardpdf at `32e13a5` and Floor Inspector backend at `4658e375d`.
+Date: 2026-09-14. Status: **implemented in `@shardpdf/core` as of `ae0c330`
+(2026-09-16); steps 1 to 4 below are done, step 5 (Floor canary) is not**.
+Originally inspected shardpdf at `32e13a5` and Floor Inspector backend at
+`4658e375d`.
 
 ## Review (2026-09-15)
 
@@ -25,6 +27,42 @@ Re-checked against shardpdf `ee3f33d` and Floor Inspector `4658e375d`.
   array, but the doc comments, `native.d.ts`, and README said "link
   annotations". Wording corrected to "all annotations" to match the
   `annotations: "drop"` acknowledgement proposed here.
+
+## Implementation record (2026-09-16)
+
+Landed in four commits, each verified with `cargo test`, `node --test`,
+`bun test`, `tsc`, and biome:
+
+- `024503f` natives: `pageCount`, `extractSelection` (zero-based, ordered,
+  one source parse), `Assembly#appendShardBytes`, `SHARDPDF_PANIC` on caught
+  unwinds. Shared extraction core behind the legacy 1-based `extractPages`.
+- `fed6847` facade: `merge`, `extract`, `getPageCount` exactly as in the
+  contract below, nested outline flattening, atomic sibling-temp publication,
+  `byteLength` from the closed file, `inputs[i].{pageCount,startPageIndex}`,
+  mandatory `annotations: "drop"`. Public types exported from `index.d.ts`.
+- `35f7906` consumer smoke (`bun run smoke:consumer`): `npm pack` tarball
+  installed into a standalone package, run under Node 24.15 and Bun 1.4.2 in
+  CJS and ESM, plus `tsc` nodenext type checks with load-bearing negative
+  cases. Added `files`, `exports`, `engines` to the package. Only darwin-arm64
+  prebuilt here; see `docs/audits/2026-09-16-consumer-package-smoke.md`.
+- `ae0c330` off-thread execution: napi `Task` variants (`pageCountAsync`,
+  `extractSelectionAsync`, `Assembly#appendShardAsync`/`appendShardBytesAsync`/
+  `finalizeAsync`); the facade uses them. Measured on a 400-page source: sync
+  calls tick a 1 ms interval 0 times, async 25 to 51 times, identical under
+  Node and Bun. One operation per `Assembly` at a time (`busy` getter,
+  overlapping calls reject with `SHARDPDF_INVALID_ARG`). `assemble()` keeps
+  the sync natives by design.
+
+Deviations from the contract: `PDFOptions` gained `maxDecompressedBytes`
+(pass-through of the existing zip-bomb bound). `AbortSignal` is observed at
+checkpoints only; an in-flight native task completes before cancellation is
+seen, so Floor's capped subprocess remains the hard limit as stated below.
+Error union: `SHARDPDF_*` codes are native-only; wrapper validation throws
+`TypeError`/`RangeError`, cancellation `AbortError`, and rename/stat failures
+plain Node errors. This is documented on the union rather than hidden.
+
+Not done: step 5, the Floor canary on real shards. See
+`docs/specs/2026-09-15-floor-integration-benchmark-plan.md`.
 
 ## Recommendation
 
