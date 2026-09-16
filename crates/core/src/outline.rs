@@ -49,14 +49,14 @@ pub fn build_outline_objects(
     alloc: &mut impl FnMut() -> ObjectId,
 ) -> Result<(ObjectId, Vec<(ObjectId, Object)>)> {
     if entries.is_empty() {
-        return Err(AssemblyError::Malformed("empty outline".into()));
+        return Err(AssemblyError::InvalidOutline("empty outline".into()));
     }
     // Validate structure fully before building: later passes assume that a
     // deeper entry always has a direct (level + 1) parent above it.
     let mut depth = 0usize;
     for (i, entry) in entries.iter().enumerate() {
         if entry.level as usize > depth {
-            return Err(AssemblyError::Malformed(format!(
+            return Err(AssemblyError::InvalidOutline(format!(
                 "outline entry {i} (\"{}\") jumps from level {depth} to {}",
                 entry.title, entry.level
             )));
@@ -75,7 +75,7 @@ pub fn build_outline_objects(
     for (i, entry) in entries.iter().enumerate() {
         let level = entry.level as usize;
         if level > parent_stack.len() {
-            return Err(AssemblyError::Malformed(format!(
+            return Err(AssemblyError::InvalidOutline(format!(
                 "outline entry {i} (\"{}\") jumps from level {} to {}",
                 entry.title,
                 parent_stack.len(),
@@ -89,7 +89,7 @@ pub fn build_outline_objects(
         }
 
         let page = page_ids.get(entry.page_index as usize).ok_or_else(|| {
-            AssemblyError::Malformed(format!(
+            AssemblyError::InvalidOutline(format!(
                 "outline entry \"{}\" targets page index {} but document has {} pages",
                 entry.title,
                 entry.page_index,
@@ -254,12 +254,12 @@ mod tests {
     fn rejects_level_jumps_and_bad_pages() {
         assert!(matches!(
             build(&[entry("A", 0, 0), entry("deep", 1, 2)], 4),
-            Err(AssemblyError::Malformed(_))
+            Err(AssemblyError::InvalidOutline(_))
         ));
         assert!(matches!(
             build(&[entry("A", 99, 0)], 4),
-            Err(AssemblyError::Malformed(_))
+            Err(AssemblyError::InvalidOutline(_))
         ));
-        assert!(matches!(build(&[], 4), Err(AssemblyError::Malformed(_))));
+        assert!(matches!(build(&[], 4), Err(AssemblyError::InvalidOutline(_))));
     }
 }

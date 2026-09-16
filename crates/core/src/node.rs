@@ -136,6 +136,7 @@ fn to_napi_err(e: assembler::AssemblyError) -> napi::Error<ErrorCode> {
         assembler::AssemblyError::Io(_) => ErrorCode::Io,
         assembler::AssemblyError::Malformed(_) => ErrorCode::Malformed,
         assembler::AssemblyError::InvalidSelection(_) => ErrorCode::InvalidArg,
+        assembler::AssemblyError::InvalidOutline(_) => ErrorCode::InvalidArg,
     };
     napi::Error::new(code, e.to_string())
 }

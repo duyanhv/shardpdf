@@ -266,7 +266,9 @@ test("finalize validates the outline shape and reports SHARDPDF_INVALID_ARG", ()
       assembly.abort();
     }
   }
-  // Structural problems remain MALFORMED (the shape was fine).
+  // Structural problems in a caller-supplied outline are also the caller's
+  // bug, not the PDF's: INVALID_ARG, so hosts can distinguish "retry without
+  // an outline" from "the input is broken".
   /** @type {[string, unknown][]} */
   const structural = [
     ["page out of range", [{ title: "a", pageIndex: 99 }]],
@@ -277,7 +279,7 @@ test("finalize validates the outline shape and reports SHARDPDF_INVALID_ARG", ()
     assembly.appendShard(seedPath);
     assert.throws(
       () => assembly.finalize(asAny(outline)),
-      { code: "SHARDPDF_MALFORMED" },
+      { code: "SHARDPDF_INVALID_ARG" },
       label,
     );
   }

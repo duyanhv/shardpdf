@@ -549,10 +549,11 @@ test("async natives reject with SHARDPDF_* codes and leave the assembly usable",
       await assembly.appendShardAsync(chunkPaths[0]),
       CHUNK_PAGES[0],
     );
-    // A failed finalize still consumes, like the sync method.
+    // A failed finalize still consumes, like the sync method. An outline
+    // that targets a page past the document is a caller error.
     await assert.rejects(
       assembly.finalizeAsync([{ title: "x", pageIndex: 99, level: 0 }]),
-      { code: "SHARDPDF_MALFORMED" },
+      { code: "SHARDPDF_INVALID_ARG" },
     );
     assert.equal(assembly.consumed, true);
   } finally {

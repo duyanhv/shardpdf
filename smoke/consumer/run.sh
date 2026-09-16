@@ -57,6 +57,14 @@ run "node esm" node esm.test.mjs
 run "bun cjs"  bun cjs.test.cjs
 run "bun esm"  bun esm.test.mjs
 
+step "Floor Inspector acceptance (spec mapping vs qpdf oracle)"
+if command -v qpdf >/dev/null 2>&1 && [ -f /System/Library/Fonts/AppleSDGothicNeo.ttc ]; then
+  run "node floor-acceptance" node floor-acceptance.cjs
+  run "bun floor-acceptance"  bun floor-acceptance.cjs
+else
+  echo "SKIP floor-acceptance: needs qpdf on PATH and a CJK font at /System/Library/Fonts/AppleSDGothicNeo.ttc"
+fi
+
 step "type tests (tsc --noEmit, nodenext, .ts as ESM + .cts as CJS)"
 run "tsc" "$tsc" -p tsconfig.json
 # Prove the @ts-expect-error lines are load-bearing: strip them and require

@@ -61,7 +61,23 @@ Error union: `SHARDPDF_*` codes are native-only; wrapper validation throws
 `TypeError`/`RangeError`, cancellation `AbortError`, and rename/stat failures
 plain Node errors. This is documented on the union rather than hidden.
 
-Not done: step 5, the Floor canary on real shards. See
+Acceptance evidence: `smoke/consumer/floor-acceptance.cjs` reproduces the
+mapping block below end to end through the installed package: five PDFKit
+chunks (head, two block windows, two unit windows) with an embedded CJK font
+and the exact section labels from `pdf-outline.util.ts`, `merge` with the
+`toPDFOutline` conversion, the sidecar and total page-count checks,
+`getPageCount`, `extract` of the block and unit ranges, the selected merge and
+its requested-page-count check, abort preserving `full.pdf`, and a bad outline
+rejecting with a classified code. Every count is compared against the exact
+qpdf commands Floor runs today (`--empty --pages ... --`, `--show-npages`),
+bookmark titles and targets are read back through qpdf JSON, and the run is
+identical under Node 24.15 and Bun 1.4.2. It found one contract bug: an
+outline targeting a page past the document was `SHARDPDF_MALFORMED`, which
+would have made the host's "retry without an outline" rule indistinguishable
+from a broken input. Fixed: every caller-supplied outline problem is now
+`SHARDPDF_INVALID_ARG`; `MALFORMED` is reserved for input PDFs.
+
+Not done: step 5, the Floor canary on real shards under the process cap. See
 `docs/specs/2026-09-15-floor-integration-benchmark-plan.md`.
 
 ## Recommendation

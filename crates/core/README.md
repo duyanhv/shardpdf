@@ -150,9 +150,9 @@ Native errors carry a stable `code` (typed as `ShardPdfErrorCode`):
 | ------------------------ | ------------------------------------------------------------------- |
 | `SHARDPDF_PDF_PARSE`     | The input exists but could not be parsed as a PDF.                  |
 | `SHARDPDF_IO`            | Filesystem failure: input missing or unreadable, output unwritable. |
-| `SHARDPDF_MALFORMED`     | Structural problem: no pages, cyclic parents, duplicate destination, bad outline, bad page range. |
+| `SHARDPDF_MALFORMED`     | Structural problem in an input PDF: no pages, cyclic parents, duplicate destination. |
 | `SHARDPDF_CONSUMED`      | Method called on an `Assembly` already finalized or aborted.        |
-| `SHARDPDF_INVALID_ARG`   | An argument had the wrong type, was an empty path, or was a negative, fractional, or non-finite number. Covers every `finalize()` outline field (`outline[i].pageIndex must be a non-negative integer, got 0.5`) and every `extractSelection()` page index (empty array, duplicate, or out of range). |
+| `SHARDPDF_INVALID_ARG`   | An argument had the wrong type, was an empty path, or was a negative, fractional, or non-finite number. Covers every `finalize()` outline problem, both shape (`outline[i].pageIndex must be a non-negative integer, got 0.5`) and structure (level jump, page index past the document), and every `extractSelection()` page index (empty array, duplicate, or out of range). Hosts can use it to decide "retry without an outline" versus "the input is broken" (`SHARDPDF_MALFORMED`). |
 | `SHARDPDF_PANIC`         | The native core panicked. This is a shardpdf bug, not an input problem. The panic was caught at the binding boundary, the process is intact, and any in-progress `Assembly` should be aborted. |
 
 Every error thrown by the native layer carries one of these codes; napi's own

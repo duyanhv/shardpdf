@@ -23,11 +23,15 @@ export type ShardPdfErrorCode =
   | "SHARDPDF_PDF_PARSE"
   /** Filesystem failure: input missing/unreadable or output unwritable. */
   | "SHARDPDF_IO"
-  /** The shard parsed but violates a structural expectation. */
+  /** An input PDF parsed but violates a structural expectation. */
   | "SHARDPDF_MALFORMED"
   /** Method called on an assembly already consumed by finalize()/abort(). */
   | "SHARDPDF_CONSUMED"
-  /** An argument had the wrong type, was an empty path, or was out of range. */
+  /**
+   * An argument had the wrong type, was an empty path, or was out of range.
+   * Includes every caller-supplied outline problem (shape, level jump, page
+   * index past the document) and every page-selection problem.
+   */
   | "SHARDPDF_INVALID_ARG"
   /**
    * An unwinding panic inside the native core was caught at the boundary.

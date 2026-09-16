@@ -33,6 +33,10 @@ pub enum AssemblyError {
     /// A page selection was rejected: empty, duplicated, or out of range
     /// for the document. A caller bug, not a property of the input PDF.
     InvalidSelection(String),
+    /// An outline supplied by the caller was rejected: empty, a level jump,
+    /// or a page index past the assembled document. A caller bug, not a
+    /// property of the input PDFs.
+    InvalidOutline(String),
 }
 
 impl fmt::Display for AssemblyError {
@@ -42,6 +46,7 @@ impl fmt::Display for AssemblyError {
             AssemblyError::Io(e) => write!(f, "io error: {e}"),
             AssemblyError::Malformed(msg) => write!(f, "malformed shard: {msg}"),
             AssemblyError::InvalidSelection(msg) => write!(f, "invalid page selection: {msg}"),
+            AssemblyError::InvalidOutline(msg) => write!(f, "invalid outline: {msg}"),
         }
     }
 }
