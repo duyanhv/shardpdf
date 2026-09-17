@@ -45,8 +45,20 @@ Floor-side work.
   rayon pool was removed so shardpdf itself adds no thread-pool address
   space. See `docs/audits/2026-09-16-consumer-package-smoke.md`.
 
-Not done: Phase 2 (backend adapter PR), Phase 3 (real-renderer corpus),
-Phase 4 (comparison runs), Phase 5 (canary). `benchmarks/harness/Dockerfile`
+Phase 2 is open as a draft PR in the Floor backend:
+https://github.com/MetaInnotech-VN/floor-inspector-backend/pull/2019
+(branch `feat/shardpdf-assembler`, on top of `4658e375d`). It vendors this
+package at `be5e459`, adds the `PdfAssembler` contract with `QpdfAssembler`
+and `ShardPdfAssembler` behind `REPORT_PDF_ASSEMBLER` (default `qpdf`),
+records the engine and outcome per run, and tests both engines against real
+chunk PDFs through the real `merge()` step. Floor CI is green on it (unit,
+gate scripts, database, e2e, coverage). One deviation from the table above:
+shardpdf runs inside the existing export-run child rather than a second
+`spawnWithMemoryCap` child, because the production `rlimit` limiter cannot
+start a JS runtime at the configured caps.
+
+Not done: Phase 3 (real-renderer corpus), Phase 4 (comparison runs),
+Phase 5 (canary). `benchmarks/harness/Dockerfile`
 is still not the integration image; `smoke/linux/Dockerfile` is a
 consumer-smoke image, not a benchmark image.
 
