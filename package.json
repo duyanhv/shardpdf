@@ -13,7 +13,8 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "bench": "turbo run bench",
-    "smoke:consumer": "bash smoke/consumer/run.sh"
+    "smoke:consumer": "bash smoke/consumer/run.sh",
+    "smoke:adapter": "bash smoke/adapter-consumer/run.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.7",

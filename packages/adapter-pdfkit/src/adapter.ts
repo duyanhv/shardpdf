@@ -27,13 +27,19 @@
 
 import { createWriteStream } from "node:fs";
 import { finished } from "node:stream/promises";
+// Deliberately the deep path, not the "@shardpdf/orchestrator" barrel: the
+// barrel re-exports generate(), which imports @shardpdf/core and therefore the
+// native binary. `defineAdapter` is a dependency-free shape check, so going
+// through the barrel would make merely *authoring* an adapter require a
+// platform build of the Rust core. Verified by the consumer smoke test, which
+// loads the adapter with @shardpdf/core absent.
+import { defineAdapter } from "@shardpdf/orchestrator/adapter";
 import type {
   GlobalContext,
   MeasureResult,
   RendererAdapter,
   Shard,
-} from "@shardpdf/orchestrator";
-import { defineAdapter } from "@shardpdf/orchestrator";
+} from "@shardpdf/orchestrator/types";
 import { ImageCache } from "./image-cache.ts";
 import type { PdfkitAdapterOptions, SectionTemplate } from "./types.ts";
 

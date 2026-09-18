@@ -101,3 +101,20 @@ give each process its own `cacheDir`.
 - `bun run --cwd packages/orchestrator soak` — the memory-boundedness
   invariant: tripling document size must not grow orchestrator peak RSS
   (measured: 88MB @ 1,000 pages vs 90MB @ 3,000 pages).
+
+## Subpath exports
+
+`defineAdapter` and the public types are also reachable without loading the
+assembler:
+
+| Import | Contents | Loads the native core? |
+| --- | --- | --- |
+| `@shardpdf/orchestrator` | everything, including `generate()` | yes |
+| `@shardpdf/orchestrator/adapter` | `defineAdapter` | no |
+| `@shardpdf/orchestrator/types` | the public types | no |
+
+Adapter packages should use the deep paths. The barrel re-exports `generate()`,
+which imports `@shardpdf/core` and therefore a platform `.node` binary, so
+importing it would make merely *authoring* an adapter require a native build.
+`@shardpdf/adapter-pdfkit` does this, and its consumer smoke test asserts the
+property by deleting `@shardpdf/core` and authoring an adapter anyway.

@@ -72,7 +72,7 @@ rmdir "$work/unpack" 2>/dev/null || true
 ls node_modules/@shardpdf | sed 's/^/  /'
 ls node_modules/@shardpdf/core/*.node >/dev/null
 
-cp "$here"/{my-adapter.ts,run.ts,rules.ts,types-check.ts} .
+cp "$here"/{my-adapter.ts,run.ts,rules.ts,types-check.ts,no-core.ts} .
 cat > tsconfig.json <<'JSON'
 {
   "compilerOptions": {
@@ -85,7 +85,7 @@ cat > tsconfig.json <<'JSON'
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["my-adapter.ts", "run.ts", "rules.ts", "types-check.ts"]
+  "include": ["my-adapter.ts", "run.ts", "rules.ts", "types-check.ts", "no-core.ts"]
 }
 JSON
 
@@ -108,6 +108,21 @@ case "$node_probe" in
     fail "unexpected Node behaviour: $node_probe" ;;
 esac
 
+step "Bun: authoring works without the native core"
+# Defining templates and measuring must NOT require a platform build of the
+# Rust core -- only generate() (assembly) does. This caught a real problem:
+# importing `defineAdapter` from the orchestrator's barrel transitively loads
+# generate() -> @shardpdf/core -> the .node binary, so merely authoring an
+# adapter would have demanded a native build. The adapter now imports the
+# deep `@shardpdf/orchestrator/adapter` path instead.
+mv node_modules/@shardpdf/core "$work/core-hidden"
+if bun run no-core.ts; then
+  echo "  ok: authored and measured with @shardpdf/core absent"
+else
+  fail "the adapter cannot be used without the native core"
+fi
+mv "$work/core-hidden" node_modules/@shardpdf/core
+
 step "Bun: documented rules against the installed package"
 bun run rules.ts || fail "rules.ts"
 
@@ -118,14 +133,23 @@ bun run run.ts || fail "run.ts"
 step "verify the produced PDF"
 if command -v qpdf >/dev/null 2>&1; then
   pages="$(qpdf --show-npages out/consumer.pdf)"
-  images="$(qpdf --qdf --object-streams=disable out/consumer.pdf - 2>/dev/null | grep -c '/Subtype /Image' || true)"
+  # Capture first, then match. Piping qpdf into `grep -q` under `set -o
+  # pipefail` is a trap: grep exits at the first hit, qpdf dies of SIGPIPE, and
+  # pipefail reports the whole pipeline as failed even though the assertion
+  # succeeded. That produced a spurious "outline missing" failure right next to
+  # a passing "outline present" line.
+  qdf="$(qpdf --qdf --object-streams=disable out/consumer.pdf - 2>/dev/null || true)"
+  images="$(printf '%s' "$qdf" | grep -c '/Subtype /Image' || true)"
+  outlines="$(qpdf --json --json-key=outlines out/consumer.pdf 2>/dev/null || true)"
   qpdf --check out/consumer.pdf >/dev/null || fail "qpdf --check"
   echo "  pages=$pages imageXObjects=$images bytes=$(wc -c < out/consumer.pdf | tr -d ' ')"
   [ "$pages" = "90" ] || fail "expected 90 pages, got $pages"
   # 5 distinct gauges x 3 shards = 15. Anything near 90 means the dedupe broke.
   [ "$images" -le 30 ] || fail "expected <= 30 image objects (5 per shard x 3), got $images"
-  qpdf --json --json-key=outlines out/consumer.pdf 2>/dev/null | grep -q "Units 1-30" || fail "outline missing"
-  echo "  outline present"
+  case "$outlines" in
+    *"Units 1-30"*) echo "  outline present" ;;
+    *) fail "outline missing from the assembled document" ;;
+  esac
 else
   echo "  skipped (no qpdf)"
 fi

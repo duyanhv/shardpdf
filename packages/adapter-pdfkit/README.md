@@ -127,6 +127,14 @@ a plugin, and the host must own both versions. Since neither shardpdf package
 is published yet, an external consumer installs `file:` tarballs the way Floor
 Inspector already does for `@shardpdf/core`.
 
+**Authoring does not require the native core.** Defining templates and calling
+`measure()` work with `@shardpdf/core` absent; only `generate()` (assembly)
+needs the Rust binary. That holds because this package imports `defineAdapter`
+from the deep `@shardpdf/orchestrator/adapter` path rather than the package
+barrel, which re-exports `generate()` and therefore pulls in the `.node`
+binary. The consumer smoke test asserts it by deleting `@shardpdf/core` and
+authoring an adapter anyway.
+
 ## Errors
 
 | Error | When |
@@ -155,3 +163,11 @@ Verified by mutation: bypassing the cache in the fixture makes the guard report
 120 rasterizes instead of 6.
 
 qpdf is an optional oracle; structural assertions skip without it.
+
+The packaged-consumption path is separate, and is what catches defects the
+in-repo tests structurally cannot (a `workspace:*` dependency, a missing
+subpath export, a native-binary requirement leaking into authoring):
+
+```bash
+bun run smoke:adapter
+```
