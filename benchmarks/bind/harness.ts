@@ -21,7 +21,7 @@ import type {
 
 const execFileP = promisify(execFile);
 const BENCH_DIR = path.resolve(import.meta.dirname, "..");
-const ENGINES: BindEngine[] = ["qpdf", "shardpdf"];
+const ENGINES: BindEngine[] = ["qpdf", "shardpdf", "shardpdf-merge"];
 const MODES: BindMode[] = ["merge", "outline", "extract"];
 
 type Check = "pass" | "fail" | "skipped";
@@ -50,7 +50,14 @@ interface BindResult {
     platform: string;
     arch: string;
   };
-  versions: { qpdf: string; shardpdf: string };
+  versions: {
+    qpdf: string;
+    shardpdf: string;
+    /** Cargo profile of the loaded native binding: "release" or "debug". */
+    shardpdfProfile: string;
+    /** Git commit the harness ran from, with "-dirty" if the tree had changes. */
+    git: string;
+  };
   timestamp: string;
   notes: string[];
 }
@@ -78,6 +85,7 @@ const { values } = parseArgs({
     tag: { type: "string", default: "local-bind" },
     keep: { type: "boolean", default: false },
     iterations: { type: "string", default: "3" },
+    "allow-debug": { type: "boolean", default: false },
   },
 });
 
@@ -108,6 +116,26 @@ if (!Number.isInteger(iterations) || iterations < 1 || iterations > 20) {
   console.error("--iterations must be an integer from 1 to 20");
   process.exit(2);
 }
+
+// A debug binding is roughly 9x slower on the bind step. The Aug 2026
+// baseline was accidentally measured that way, so refuse by default.
+const shardpdfBuild = await shardpdfBuildInfo();
+if (
+  engines.some((engine) => engine.startsWith("shardpdf")) &&
+  shardpdfBuild.profile !== "release" &&
+  !values["allow-debug"]
+) {
+  console.error(
+    `@shardpdf/core binding is a ${shardpdfBuild.profile} build. Run ` +
+      "`bun run --cwd crates/core build:release` first, or pass --allow-debug " +
+      "to record a debug measurement (the result JSON will say so).",
+  );
+  process.exit(2);
+}
+const gitDescription = await gitDescribe();
+console.log(
+  `bind harness: @shardpdf/core ${shardpdfBuild.version} (${shardpdfBuild.profile}), git ${gitDescription}, node ${process.version}`,
+);
 
 const generatedScale = values.scale as ScaleName | undefined;
 const generatedFixtureDir =
@@ -532,7 +560,9 @@ async function runOne(
     },
     versions: {
       qpdf: await qpdfVersion(),
-      shardpdf: await shardpdfVersion(),
+      shardpdf: shardpdfBuild.version,
+      shardpdfProfile: shardpdfBuild.profile,
+      git: gitDescription,
     },
     timestamp: new Date().toISOString(),
     notes,
@@ -751,16 +781,39 @@ async function qpdfVersion(): Promise<string> {
   }
 }
 
-async function shardpdfVersion(): Promise<string> {
+async function shardpdfBuildInfo(): Promise<{
+  profile: string;
+  version: string;
+}> {
   try {
-    const pkg = JSON.parse(
-      await readFile(
-        path.resolve(BENCH_DIR, "..", "crates/core/package.json"),
-        "utf8",
-      ),
-    ) as { version?: string };
-    return pkg.version ?? "unknown";
+    const core = (await import("@shardpdf/core")) as {
+      buildInfo?: () => { profile: string; version: string };
+    };
+    if (typeof core.buildInfo === "function") return core.buildInfo();
+    return { profile: "unknown", version: "unknown" };
   } catch {
-    return "missing";
+    return { profile: "missing", version: "missing" };
+  }
+}
+
+async function gitDescribe(): Promise<string> {
+  try {
+    const { stdout: sha } = await execFileP(
+      "git",
+      ["rev-parse", "--short", "HEAD"],
+      {
+        cwd: BENCH_DIR,
+      },
+    );
+    const { stdout: status } = await execFileP(
+      "git",
+      ["status", "--porcelain"],
+      {
+        cwd: BENCH_DIR,
+      },
+    );
+    return `${sha.trim()}${status.trim().length > 0 ? "-dirty" : ""}`;
+  } catch {
+    return "unknown";
   }
 }

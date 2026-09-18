@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { getEventListeners } from "node:events";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -21,6 +22,12 @@ const LYING_ADAPTER_PATH = fileURLToPath(
 
 const workDir = await mkdtemp(path.join(tmpdir(), "shardpdf-orch-test-"));
 after(() => rm(workDir, { recursive: true, force: true }));
+
+if (!(await qpdfAvailable())) {
+  console.warn(
+    "warning: qpdf not found; PDF validity and link-integrity checks are skipped in this run",
+  );
+}
 
 /** 3 body sections + a TOC that references all of them; page estimates force
  * multiple shards, so the TOC's links are genuinely cross-shard. */
@@ -139,13 +146,20 @@ test("anchor-referenced outlines land in the document", async (t) => {
 });
 
 test("an outline referencing an unknown anchor fails loudly", async () => {
+  const events: ProgressEvent[] = [];
   await assert.rejects(
     generate(testPlan(), {
       outputPath: path.join(workDir, "bad-outline.pdf"),
       maxPagesPerShard: 4,
       outline: [{ title: "ghost", anchor: "sec:nope" }],
+      onProgress: (e) => events.push(e),
     }),
     /unknown anchor "sec:nope"/,
+  );
+  assert.equal(
+    events.filter((e) => e.phase === "render").length,
+    0,
+    "outline is validated before the render pass starts",
   );
 });
 
@@ -182,6 +196,18 @@ test("a crashed run resumes from the shard cache", async () => {
   assert.equal(second.cachedShards, 3);
   assert.equal(second.totalPages, 10);
   assert.ok((await stat(outputPath)).size > 0);
+
+  // Bumping the adapter version must invalidate every cached shard, even
+  // though section data and module path are unchanged.
+  const bumped = testPlan();
+  bumped.adapter = { ...bumped.adapter, version: "2" };
+  const third = await generate(bumped, {
+    outputPath,
+    cacheDir,
+    maxPagesPerShard: 4,
+    keepCache: true,
+  });
+  assert.equal(third.renderedShards, 3, "adapter version is part of the key");
 });
 
 test("a non-deterministic adapter fails loudly and ships nothing", async () => {
@@ -283,3 +309,128 @@ test("an aborted signal stops the run", async () => {
     (err: Error) => err.name === "AbortError",
   );
 });
+
+test("generate detaches from a long-lived signal when it finishes", async () => {
+  const controller = new AbortController();
+  const before = getEventListeners(controller.signal, "abort").length;
+  await generate(testPlan(), {
+    outputPath: path.join(workDir, "listeners.pdf"),
+    maxPagesPerShard: 4,
+    signal: controller.signal,
+  });
+  assert.equal(
+    getEventListeners(controller.signal, "abort").length,
+    before,
+    "no abort listener leaked onto the caller's signal",
+  );
+});
+
+test("two concurrent generate() calls sharing output and cache both succeed", async () => {
+  const outputPath = path.join(workDir, "concurrent.pdf");
+  const opts = {
+    outputPath,
+    keepCache: true,
+    concurrency: 2,
+    retries: 0,
+    maxPagesPerShard: 4,
+  };
+  for (let trial = 0; trial < 3; trial++) {
+    const results = await Promise.allSettled([
+      generate(testPlan(), opts),
+      generate(testPlan(), opts),
+    ]);
+    assert.deepEqual(
+      results.map((r) => r.status),
+      ["fulfilled", "fulfilled"],
+      `trial ${trial}: ${results
+        .filter((r) => r.status === "rejected")
+        .map((r) => (r as PromiseRejectedResult).reason.message)
+        .join("; ")}`,
+    );
+    assert.ok((await stat(outputPath)).size > 0);
+    if (await qpdfAvailable()) {
+      await execFileP("qpdf", ["--check", outputPath]);
+    }
+  }
+});
+
+test("a truncated cached shard from a crashed render is not reused", async () => {
+  await truncatedCacheScenario();
+});
+
+test("a short run finishing with default keepCache does not delete a longer run's cache", async () => {
+  // Both runs share one cache dir. The short run finishes first and, with
+  // keepCache unset (false), asks for cleanup. That must be deferred until
+  // the long run has closed its cache, or the long run fails with ENOENT on
+  // manifest writes and shard reads.
+  const cacheDir = path.join(workDir, "shared-cleanup-cache");
+  const shortPlan: DocumentPlan<TestSection> = {
+    adapter: { module: ADAPTER_PATH, export: "adapter" },
+    sections: [
+      { id: "tiny", data: { kind: "body", pages: 1 }, pageEstimate: 1 },
+    ],
+  };
+  const longPlan: DocumentPlan<TestSection> = {
+    adapter: { module: ADAPTER_PATH, export: "adapter" },
+    sections: Array.from({ length: 6 }, (_, i) => ({
+      id: `long${i}`,
+      data: { kind: "body", pages: 30 },
+      pageEstimate: 30,
+    })),
+  };
+  for (let trial = 0; trial < 3; trial++) {
+    const results = await Promise.allSettled([
+      generate(longPlan, {
+        outputPath: path.join(workDir, `long${trial}.pdf`),
+        cacheDir,
+        maxPagesPerShard: 30,
+        concurrency: 2,
+      }),
+      generate(shortPlan, {
+        outputPath: path.join(workDir, `short${trial}.pdf`),
+        cacheDir,
+        maxPagesPerShard: 30,
+        concurrency: 1,
+      }),
+    ]);
+    assert.deepEqual(
+      results.map((r) => r.status),
+      ["fulfilled", "fulfilled"],
+      `trial ${trial}: ${results
+        .filter((r) => r.status === "rejected")
+        .map((r) => (r as PromiseRejectedResult).reason.message)
+        .join("; ")}`,
+    );
+    // Both finished with keepCache false, so the last closer removed it.
+    await assert.rejects(stat(cacheDir), { code: "ENOENT" });
+  }
+});
+
+async function truncatedCacheScenario(): Promise<void> {
+  const outputPath = path.join(workDir, "truncated.pdf");
+  const cacheDir = path.join(workDir, "truncated-cache");
+  await generate(testPlan(), {
+    outputPath,
+    cacheDir,
+    maxPagesPerShard: 4,
+    keepCache: true,
+  });
+  // Simulate a crash mid-render on a resume: the only files at renderPath()
+  // are complete ones (renders go through a temp file), so a half-written
+  // temp must be invisible to the next run.
+  const { readdir, writeFile } = await import("node:fs/promises");
+  const shards = (await readdir(cacheDir)).filter((f) =>
+    f.startsWith("shard-"),
+  );
+  assert.equal(shards.length, 3);
+  await writeFile(path.join(cacheDir, `${shards[0]}.1234-dead.tmp`), "%PDF-");
+  await rm(outputPath);
+  const second = await generate(testPlan(), {
+    outputPath,
+    cacheDir,
+    maxPagesPerShard: 4,
+    keepCache: true,
+  });
+  assert.equal(second.cachedShards, 3, "complete shards reused");
+  assert.ok((await stat(outputPath)).size > 0);
+}

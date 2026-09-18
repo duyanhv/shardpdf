@@ -3,13 +3,15 @@ import {
   type AssembleResult,
   Assembly,
   assemble,
-  type ExtractOptions,
   Extractor,
-  type ExtractResult,
-  extract,
+  type ExtractRangesOptions,
+  type ExtractRangesResult,
   extractPages,
+  extractRanges,
+  extractSelectionAsync,
   pageCount,
-  ShardPdfError,
+  pageCountAsync,
+  type ShardPdfError,
   type ShardPdfErrorCode,
   validate,
 } from "../index.js";
@@ -17,12 +19,13 @@ import {
 const extracted: number = extractPages("report.pdf", 10, 20, "slice.pdf");
 void extracted;
 
-const extractOptions: ExtractOptions = {
+const extractOptions: ExtractRangesOptions = {
   input: "report.pdf",
   ranges: [{ startPage: 1, endPage: 2, output: "slice.pdf" }],
   signal: new AbortController().signal,
 };
-const extractResult: Promise<ExtractResult> = extract(extractOptions);
+const extractResult: Promise<ExtractRangesResult> =
+  extractRanges(extractOptions);
 void extractResult;
 
 const count: number = pageCount("report.pdf");
@@ -35,11 +38,9 @@ const extractor = new Extractor("report.pdf");
 const sliceCount: number = extractor.extractRange(1, 2, "slice.pdf");
 void sliceCount;
 
-const someError = new Error("x");
-if (someError instanceof ShardPdfError) {
-  const code: ShardPdfErrorCode = someError.code;
-  void code;
-}
+declare const someError: ShardPdfError;
+const code: ShardPdfErrorCode = someError.code;
+void code;
 
 const options: AssembleOptions = {
   shards: ["shard-0.pdf", "shard-1.pdf"],
@@ -52,3 +53,18 @@ void result;
 
 const lowLevel = new Assembly("report.partial.pdf");
 lowLevel.abort();
+
+const asyncCount: Promise<number> = pageCountAsync(new Uint8Array(4));
+void asyncCount;
+const asyncExtract: Promise<number> = extractSelectionAsync(
+  "report.pdf",
+  [0, 2],
+  "slice.pdf",
+);
+void asyncExtract;
+const appended: Promise<number> = lowLevel.appendShardAsync("shard-0.pdf");
+void appended;
+const finalized: Promise<void> = lowLevel.finalizeAsync();
+void finalized;
+const busy: boolean = lowLevel.busy;
+void busy;

@@ -6,3 +6,6 @@ benchmarks/results
 target
 crates/core/fuzz/corpus
 crates/core/fuzz/artifacts
+**/target
+smoke/consumer/vendor
+smoke/consumer/node_modules

@@ -70,11 +70,34 @@ depend on (adapter ref, section data, global context) in
 `<outputPath>.shardcache/`. A crashed run re-uses them; pass `keepCache: true`
 to retain the cache after success.
 
+The cache cannot see inside your adapter. Set `adapter.version` to any string
+that changes whenever the adapter's output could change for the same section
+data (template, font, or layout edits); it is folded into every cache key.
+Without it, a resumed run after an adapter change will silently reuse stale
+shards.
+
+### Sharing a cache directory
+
+Within one process, any number of `generate()` calls may share a cache
+directory (the default `<outputPath>.shardcache` is shared whenever two calls
+target the same output). Manifest writes are serialized and merged, rendered
+shards are promoted atomically, and cleanup is reference counted: a run that
+finishes with `keepCache` unset only marks the directory for removal, and it
+is deleted when the last run using it closes.
+
+Across processes none of that coordination exists. Two processes writing the
+same manifest at the same instant can lose one entry (cost: a redundant
+re-render on the next resume, never a wrong document), and a process that
+finishes with `keepCache` unset can delete shards another process still needs
+(that run fails with `SHARDPDF_IO`). If separate processes must share a cache
+directory, pass `keepCache: true` in every process and clean up externally, or
+give each process its own `cacheDir`.
+
 ## Tests
 
-- `bun run --cwd packages/orchestrator test` — 19 tests incl. end-to-end
+- `bun run --cwd packages/orchestrator test` — 20 tests incl. end-to-end
   multi-shard generation, cross-shard link integrity, resume, determinism
-  enforcement, abort.
+  enforcement, abort, cache invalidation on adapter version.
 - `bun run --cwd packages/orchestrator soak` — the memory-boundedness
   invariant: tripling document size must not grow orchestrator peak RSS
   (measured: 88MB @ 1,000 pages vs 90MB @ 3,000 pages).

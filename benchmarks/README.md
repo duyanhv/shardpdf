@@ -11,7 +11,8 @@ for the canonical document every runner must produce, and the design spec in
 - `runners/` — one per contestant: `pdf-lib`, `pdfkit`, `react-pdf`, `merge`
   (pdfkit shards + pdf-merger-js bind — the workaround teams use today), and
   `shardpdf` (same shards bound with `@shardpdf/core`; build it first with
-  `bun run --cwd crates/core build`)
+  `bun run --cwd crates/core build:release`; a debug build is roughly 9x
+  slower on the bind step and will misrepresent the comparison)
 - `harness/` — spawns runners under Node, samples peak RSS, validates with qpdf,
   writes JSON into `results/`
 - `bind/` — prepares one shared set of PDFKit shards, then measures qpdf and

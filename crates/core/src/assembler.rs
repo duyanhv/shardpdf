@@ -16,7 +16,7 @@
 
 use crate::outline::{build_outline_objects, OutlineEntry};
 use crate::serializer::write_indirect_object;
-use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, StringFormat};
+use lopdf::{dictionary, Dictionary, Document, LoadOptions, Object, ObjectId, StringFormat};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
@@ -30,25 +30,21 @@ pub enum AssemblyError {
     Pdf(lopdf::Error),
     Io(std::io::Error),
     Malformed(String),
+    /// A page selection was rejected: empty, duplicated, or out of range
+    /// for the document. A caller bug, not a property of the input PDF.
+    InvalidSelection(String),
+    /// An outline supplied by the caller was rejected: empty, a level jump,
+    /// or a page index past the assembled document. A caller bug, not a
+    /// property of the input PDFs.
+    InvalidOutline(String),
+    /// Two shards contributed the same named destination. Structural, and
+    /// reported apart from `Malformed` so callers can single out the name
+    /// collision rather than re-parsing the message.
     DuplicateDestination(String),
-    InvalidRange(String),
+    /// A named destination survived into the assembled document pointing at
+    /// a page that is not in it. Structural, and reported apart from
+    /// `Malformed` for the same reason.
     DanglingDestination(String),
-}
-
-impl AssemblyError {
-    /// Stable machine-readable code — the JS wrapper exposes this as
-    /// `ShardPdfError.code`, so consumers branch on codes, never on message
-    /// prose. Codes are API: add, don't rename.
-    pub fn code(&self) -> &'static str {
-        match self {
-            AssemblyError::Pdf(_) => "PDF_PARSE",
-            AssemblyError::Io(_) => "IO",
-            AssemblyError::Malformed(_) => "MALFORMED_SHARD",
-            AssemblyError::DuplicateDestination(_) => "DUPLICATE_DESTINATION",
-            AssemblyError::InvalidRange(_) => "INVALID_RANGE",
-            AssemblyError::DanglingDestination(_) => "DANGLING_DESTINATION",
-        }
-    }
 }
 
 impl fmt::Display for AssemblyError {
@@ -57,10 +53,11 @@ impl fmt::Display for AssemblyError {
             AssemblyError::Pdf(e) => write!(f, "pdf error: {e}"),
             AssemblyError::Io(e) => write!(f, "io error: {e}"),
             AssemblyError::Malformed(msg) => write!(f, "malformed shard: {msg}"),
+            AssemblyError::InvalidSelection(msg) => write!(f, "invalid page selection: {msg}"),
+            AssemblyError::InvalidOutline(msg) => write!(f, "invalid outline: {msg}"),
             AssemblyError::DuplicateDestination(msg) => {
                 write!(f, "duplicate named destination: {msg}")
             }
-            AssemblyError::InvalidRange(msg) => write!(f, "invalid page range: {msg}"),
             AssemblyError::DanglingDestination(msg) => {
                 write!(f, "dangling named destination: {msg}")
             }
@@ -72,7 +69,13 @@ impl std::error::Error for AssemblyError {}
 
 impl From<lopdf::Error> for AssemblyError {
     fn from(e: lopdf::Error) -> Self {
-        AssemblyError::Pdf(e)
+        // lopdf wraps filesystem failures (missing input file, permission
+        // denied) in its own error type. Callers need to tell "file not
+        // there" from "file is not a PDF", so unwrap IO back out.
+        match e {
+            lopdf::Error::IO(io) => AssemblyError::Io(io),
+            other => AssemblyError::Pdf(other),
+        }
     }
 }
 
@@ -116,8 +119,74 @@ impl Write for CountingWriter {
     }
 }
 
+/// Options for parsing shards. Defaults are lenient and unbounded, which is
+/// right for shards the caller rendered itself.
+#[derive(Debug, Clone, Default)]
+pub struct ShardLoadOptions {
+    /// Upper bound on how many bytes any one compressed stream in a shard
+    /// may inflate to while the shard is parsed. lopdf decodes object and
+    /// xref streams eagerly on load, so without a bound a sub-kilobyte file
+    /// can allocate gigabytes before this crate sees it. `None` = no limit.
+    pub max_decompressed_bytes: Option<usize>,
+}
+
+impl ShardLoadOptions {
+    fn to_lopdf(&self) -> LoadOptions {
+        LoadOptions {
+            max_decompressed_size: self.max_decompressed_bytes,
+            ..LoadOptions::default()
+        }
+    }
+}
+
+/// Loads a PDF from disk with the given shard options.
+pub fn load_document(path: &Path, options: &ShardLoadOptions) -> Result<Document> {
+    Ok(Document::load_with_options(path, options.to_lopdf())?)
+}
+
+/// Parses a PDF already held in memory with the given shard options.
+pub fn load_document_bytes(bytes: &[u8], options: &ShardLoadOptions) -> Result<Document> {
+    Ok(Document::load_mem_with_options(bytes, options.to_lopdf())?)
+}
+
+/// Where a PDF comes from: a path on disk or bytes already in memory. Both
+/// parse through the same lopdf options, so a document behaves identically
+/// whichever way it arrives.
+#[derive(Debug, Clone, Copy)]
+pub enum PdfSource<'a> {
+    Path(&'a Path),
+    Bytes(&'a [u8]),
+}
+
+impl<'a> From<&'a Path> for PdfSource<'a> {
+    fn from(path: &'a Path) -> Self {
+        PdfSource::Path(path)
+    }
+}
+
+impl<'a> From<&'a [u8]> for PdfSource<'a> {
+    fn from(bytes: &'a [u8]) -> Self {
+        PdfSource::Bytes(bytes)
+    }
+}
+
+/// Loads a PDF from either source with the given shard options.
+pub fn load_source(source: PdfSource<'_>, options: &ShardLoadOptions) -> Result<Document> {
+    match source {
+        PdfSource::Path(path) => load_document(path, options),
+        PdfSource::Bytes(bytes) => load_document_bytes(bytes, options),
+    }
+}
+
+/// Parses the source and returns its page count. Nothing is built or
+/// written; the working set is one parsed document.
+pub fn page_count(source: PdfSource<'_>, options: &ShardLoadOptions) -> Result<usize> {
+    Ok(load_source(source, options)?.get_pages().len())
+}
+
 pub struct Assembly {
     output_path: PathBuf,
+    load_options: ShardLoadOptions,
     writer: CountingWriter,
     /// object number -> byte offset of its `n g obj` header
     offsets: BTreeMap<u32, u64>,
@@ -128,12 +197,20 @@ pub struct Assembly {
 
 impl Assembly {
     pub fn new(output_path: impl Into<PathBuf>) -> Result<Self> {
+        Self::with_options(output_path, ShardLoadOptions::default())
+    }
+
+    pub fn with_options(
+        output_path: impl Into<PathBuf>,
+        load_options: ShardLoadOptions,
+    ) -> Result<Self> {
         let output_path = output_path.into();
         let mut writer = CountingWriter::new(File::create(&output_path)?);
         // Header + high-bit comment marking the file as binary (spec §7.5.2).
         writer.write_all(b"%PDF-1.7\n%\xB5\xB5\xB5\xB5\n")?;
         Ok(Assembly {
             output_path,
+            load_options,
             writer,
             offsets: BTreeMap::new(),
             page_ids: Vec::new(),
@@ -147,7 +224,14 @@ impl Assembly {
     }
 
     pub fn append_shard_file(&mut self, path: &Path) -> Result<u32> {
-        let shard = Document::load(path)?;
+        let shard = load_document(path, &self.load_options)?;
+        self.append_shard_doc(shard)
+    }
+
+    /// Same as [`append_shard_file`](Self::append_shard_file) but parses the
+    /// shard from memory. The caller's buffer is not retained.
+    pub fn append_shard_bytes(&mut self, bytes: &[u8]) -> Result<u32> {
+        let shard = load_document_bytes(bytes, &self.load_options)?;
         self.append_shard_doc(shard)
     }
 
@@ -155,7 +239,16 @@ impl Assembly {
     /// consumed; nothing of it stays in memory beyond page ids, destination
     /// names, and byte offsets.
     pub fn append_shard_doc(&mut self, mut shard: Document) -> Result<u32> {
+        // lopdf keeps the source's object-stream containers and xref streams
+        // in `objects` (it has already unpacked their contents). Copying them
+        // would duplicate every packed object as an orphan blob and drop a
+        // stray /Type /XRef stream into the output. Drop them before
+        // renumbering so the id space stays dense.
+        shard
+            .objects
+            .retain(|_, object| !is_structural_only(object));
         shard.renumber_objects_with(self.next_object);
+        normalize_generations(&mut shard);
 
         let pages: Vec<ObjectId> = shard.get_pages().into_values().collect();
         if pages.is_empty() {
@@ -171,6 +264,7 @@ impl Assembly {
         }
 
         for (&id, object) in &shard.objects {
+            debug_assert_eq!(id.1, 0, "generations are normalized before writing");
             self.offsets.insert(id.0, self.writer.position);
             write_indirect_object(&mut self.writer, id, object)?;
         }
@@ -279,6 +373,39 @@ fn trailer_root(doc: &Document) -> Result<ObjectId> {
     Ok(doc.trailer.get(b"Root")?.as_reference()?)
 }
 
+/// Objects that only describe the *source file's* layout and must never be
+/// carried into a re-serialized document: object-stream containers, xref
+/// streams, and the linearization dictionary.
+fn is_structural_only(object: &Object) -> bool {
+    match object {
+        Object::Stream(stream) => stream.dict.has_type(b"ObjStm") || stream.dict.has_type(b"XRef"),
+        Object::Dictionary(dict) => dict.has(b"Linearized"),
+        _ => false,
+    }
+}
+
+/// Rewrites every object id and reference to generation 0. Renumbering keeps
+/// the source generation (`5 2 obj` after an incremental update), but the
+/// xref table this assembler writes is a fresh, single-section table, so a
+/// non-zero generation there would contradict the object header and produce
+/// a document strict readers reject. Numbers are already unique after
+/// renumbering, so collapsing generations cannot collide.
+fn normalize_generations(shard: &mut Document) {
+    if shard.objects.keys().all(|id| id.1 == 0) {
+        return;
+    }
+    let objects = std::mem::take(&mut shard.objects);
+    shard.objects = objects
+        .into_iter()
+        .map(|((number, _), object)| ((number, 0), object))
+        .collect();
+    shard.traverse_objects(|object| {
+        if let Object::Reference((_, generation)) = object {
+            *generation = 0;
+        }
+    });
+}
+
 /// Follows references (bounded, cycles are malformed input) to a concrete object.
 fn resolve<'a>(doc: &'a Document, mut obj: &'a Object) -> Result<&'a Object> {
     for _ in 0..32 {
@@ -349,7 +476,7 @@ pub(crate) fn extract_named_dests(shard: &Document) -> Result<Vec<(Vec<u8>, Obje
     if let Ok(names_obj) = catalog.get(b"Names") {
         let names_dict = resolve_dict(shard, names_obj)?;
         if let Ok(dests_obj) = names_dict.get(b"Dests") {
-            walk_name_tree(shard, dests_obj, &mut out)?;
+            walk_name_tree(shard, dests_obj, &mut out, &mut BTreeSet::new())?;
         }
     }
     if let Ok(dests_obj) = catalog.get(b"Dests") {
@@ -365,11 +492,20 @@ fn walk_name_tree(
     doc: &Document,
     node_obj: &Object,
     out: &mut Vec<(Vec<u8>, Object)>,
+    visited: &mut BTreeSet<ObjectId>,
 ) -> Result<()> {
+    if let Object::Reference(id) = node_obj {
+        if !visited.insert(*id) {
+            return Err(AssemblyError::Malformed(format!(
+                "cycle in /Names/Dests tree at {} {} R",
+                id.0, id.1
+            )));
+        }
+    }
     let node = resolve_dict(doc, node_obj)?;
     if let Ok(kids_obj) = node.get(b"Kids") {
         for kid in resolve(doc, kids_obj)?.as_array()? {
-            walk_name_tree(doc, kid, out)?;
+            walk_name_tree(doc, kid, out, visited)?;
         }
     }
     if let Ok(names_obj) = node.get(b"Names") {
@@ -538,7 +674,13 @@ mod tests {
         let mut found = Vec::new();
         let names_obj = catalog.get(b"Names").expect("catalog lost /Names");
         let names_dict = resolve_dict(&merged, names_obj).unwrap();
-        walk_name_tree(&merged, names_dict.get(b"Dests").unwrap(), &mut found).unwrap();
+        walk_name_tree(
+            &merged,
+            names_dict.get(b"Dests").unwrap(),
+            &mut found,
+            &mut BTreeSet::new(),
+        )
+        .unwrap();
 
         let names: Vec<String> = found
             .iter()
@@ -671,6 +813,38 @@ mod tests {
         ));
     }
 
+    /// A /Names/Dests node whose /Kids points back at itself must be
+    /// rejected, not recursed into until the stack overflows.
+    #[test]
+    fn cyclic_name_tree_is_rejected() {
+        let out = std::env::temp_dir().join("shardpdf-core-test-names-cycle.pdf");
+        let mut doc = make_shard(1, "ncycle");
+        let node_id = doc.new_object_id();
+        doc.objects.insert(
+            node_id,
+            Object::Dictionary(dictionary! {
+                "Kids" => vec![Object::Reference(node_id)],
+            }),
+        );
+        let catalog_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        doc.get_object_mut(catalog_id)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set(
+                "Names",
+                dictionary! { "Dests" => Object::Reference(node_id) },
+            );
+
+        let mut assembly = Assembly::new(&out).unwrap();
+        let result = assembly.append_shard_doc(doc);
+        std::fs::remove_file(&out).ok();
+        assert!(matches!(
+            result,
+            Err(AssemblyError::Malformed(message)) if message.contains("cycle in /Names/Dests")
+        ));
+    }
+
     #[test]
     fn outline_survives_write_and_reload() {
         let out = std::env::temp_dir().join("shardpdf-core-test-outline.pdf");
@@ -752,5 +926,179 @@ mod tests {
         let merged = assemble(vec![doc], "indirect-length");
         let pages: Vec<ObjectId> = merged.get_pages().into_values().collect();
         assert!(page_text(&merged, pages[0]).contains("len-p0"));
+    }
+
+    /// A shard that went through incremental updates carries objects with a
+    /// non-zero generation. The output xref is a fresh table, so every entry
+    /// must be generation 0 and every header/reference must agree with it.
+    #[test]
+    fn non_zero_generations_are_normalized() {
+        let mut doc = make_shard(1, "gen");
+        let stream_id = doc
+            .objects
+            .iter()
+            .find(|(_, o)| matches!(o, Object::Stream(_)))
+            .map(|(&id, _)| id)
+            .unwrap();
+        let stream = doc.objects.remove(&stream_id).unwrap();
+        let bumped = (stream_id.0, 2);
+        doc.objects.insert(bumped, stream);
+        doc.traverse_objects(|object| {
+            if let Object::Reference(id) = object {
+                if *id == stream_id {
+                    *id = bumped;
+                }
+            }
+        });
+
+        let out = std::env::temp_dir().join("shardpdf-core-test-generation.pdf");
+        assemble_to(vec![doc], &out);
+        let bytes = std::fs::read(&out).unwrap();
+        std::fs::remove_file(&out).ok();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains(" 2 obj"), "object header kept generation 2");
+        assert!(!text.contains(" 2 R"), "reference kept generation 2");
+
+        let merged = Document::load_mem(&bytes).unwrap();
+        let pages: Vec<ObjectId> = merged.get_pages().into_values().collect();
+        assert!(page_text(&merged, pages[0]).contains("gen-p0"));
+    }
+
+    /// A ~250 KB shard whose /ObjStm (holding the catalog, pages, and page)
+    /// inflates to `inflated_bytes`. lopdf decodes object streams eagerly on
+    /// load, so without a bound this allocates the whole payload before the
+    /// assembler sees a page. Hand-built because lopdf's writer will not
+    /// emit an object stream with a whitespace tail.
+    fn bomb_shard(inflated_bytes: usize) -> Vec<u8> {
+        use std::io::Write;
+        let objs: [&[u8]; 3] = [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+        ];
+        let mut inner = Vec::new();
+        let mut header = String::new();
+        for (i, o) in objs.iter().enumerate() {
+            header.push_str(&format!("{} {} ", i + 1, inner.len()));
+            inner.extend_from_slice(o);
+            inner.push(b'\n');
+        }
+        inner.extend(std::iter::repeat_n(b' ', inflated_bytes));
+        let first = header.len();
+        let mut payload = header.into_bytes();
+        payload.extend_from_slice(&inner);
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        enc.write_all(&payload).unwrap();
+        let packed = enc.finish().unwrap();
+
+        let mut pdf = b"%PDF-1.5\n".to_vec();
+        let objstm_off = pdf.len();
+        pdf.extend_from_slice(
+            format!(
+                "4 0 obj\n<< /Type /ObjStm /N 3 /First {first} /Filter /FlateDecode /Length {} >>\nstream\n",
+                packed.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(&packed);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        let xref_off = pdf.len();
+        let row = |t: u8, f2: u32, f3: u16| {
+            let mut r = vec![t];
+            r.extend_from_slice(&f2.to_be_bytes());
+            r.extend_from_slice(&f3.to_be_bytes());
+            r
+        };
+        let mut rows = row(0, 0, 65535);
+        for i in 0..3u16 {
+            rows.extend(row(2, 4, i));
+        }
+        rows.extend(row(1, objstm_off as u32, 0));
+        rows.extend(row(1, xref_off as u32, 0));
+        pdf.extend_from_slice(
+            format!(
+                "5 0 obj\n<< /Type /XRef /Size 6 /W [1 4 2] /Root 1 0 R /Length {} >>\nstream\n",
+                rows.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(&rows);
+        pdf.extend_from_slice(
+            format!("\nendstream\nendobj\nstartxref\n{xref_off}\n%%EOF\n").as_bytes(),
+        );
+        assert!(pdf.len() < 512 * 1024, "bomb must be small on disk");
+        pdf
+    }
+
+    /// With a limit, lopdf skips the over-budget object stream (it does not
+    /// surface the error), so the shard arrives with no pages and the
+    /// assembler rejects it as malformed. The important property is that
+    /// the payload is never allocated; the unbounded load is the control.
+    #[test]
+    fn decompression_limit_rejects_a_zip_bomb_before_it_inflates() {
+        let bytes = bomb_shard(32 * 1024 * 1024);
+        let path = std::env::temp_dir().join("shardpdf-core-test-bomb.pdf");
+        std::fs::write(&path, &bytes).unwrap();
+        let out = std::env::temp_dir().join("shardpdf-core-test-bomb-out.pdf");
+
+        let mut bounded = Assembly::with_options(
+            &out,
+            ShardLoadOptions {
+                max_decompressed_bytes: Some(1024 * 1024),
+            },
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let result = bounded.append_shard_file(&path);
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(result, Err(AssemblyError::Malformed(ref m)) if m.contains("no pages")),
+            "expected rejection, got {result:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "bounded load took {elapsed:?}; the payload was inflated"
+        );
+
+        // Control: same shard, no limit, is a legal one-page document.
+        let mut unbounded = Assembly::new(&out).unwrap();
+        assert_eq!(unbounded.append_shard_file(&path).unwrap(), 1);
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// Modern producers pack objects into /ObjStm containers and use xref
+    /// streams. lopdf unpacks them but keeps the containers in `objects`;
+    /// they must not be copied into the output as orphan blobs.
+    #[test]
+    fn object_stream_containers_are_not_copied() {
+        let mut bytes = Vec::new();
+        make_shard(2, "objstm").save_modern(&mut bytes).unwrap();
+        let source = String::from_utf8_lossy(&bytes);
+        assert!(
+            source.contains("/ObjStm"),
+            "fixture must use object streams"
+        );
+
+        let shard = Document::load_mem(&bytes).unwrap();
+        let out = std::env::temp_dir().join("shardpdf-core-test-objstm.pdf");
+        assemble_to(vec![shard], &out);
+        let output = std::fs::read(&out).unwrap();
+        std::fs::remove_file(&out).ok();
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            !text.contains("/ObjStm"),
+            "ObjStm container leaked into output"
+        );
+        assert!(
+            !text.contains("/Type /XRef"),
+            "xref stream leaked into output"
+        );
+
+        let merged = Document::load_mem(&output).unwrap();
+        let pages: Vec<ObjectId> = merged.get_pages().into_values().collect();
+        assert_eq!(pages.len(), 2);
+        assert!(page_text(&merged, pages[1]).contains("objstm-p1"));
     }
 }

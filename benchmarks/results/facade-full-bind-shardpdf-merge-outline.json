@@ -1,0 +1,184 @@
+{
+  "engine": "shardpdf-merge",
+  "mode": "outline",
+  "fixture": "full",
+  "scale": "full",
+  "iterations": 5,
+  "median": {
+    "peakProcessTreeRssBytes": 91226112,
+    "wallTimeMs": 163,
+    "outputBytes": 23676040
+  },
+  "samples": [
+    {
+      "iteration": 1,
+      "engine": "shardpdf-merge",
+      "mode": "outline",
+      "fixture": "full",
+      "scale": "full",
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 91226112,
+      "wallTimeMs": 163,
+      "outputBytes": 23676040,
+      "pageCountReported": 11164,
+      "pageCountActual": 11164,
+      "qpdfCheck": "pass",
+      "linkCheck": "pass",
+      "outlineCheck": "pass",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "facade",
+        "node": "v24.15.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 12.4.1",
+        "shardpdf": "0.1.0",
+        "shardpdfProfile": "release",
+        "git": "f56cdc3-dirty"
+      },
+      "timestamp": "2026-09-16T12:02:18.880Z",
+      "notes": []
+    },
+    {
+      "iteration": 2,
+      "engine": "shardpdf-merge",
+      "mode": "outline",
+      "fixture": "full",
+      "scale": "full",
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 92684288,
+      "wallTimeMs": 165,
+      "outputBytes": 23676040,
+      "pageCountReported": 11164,
+      "pageCountActual": 11164,
+      "qpdfCheck": "pass",
+      "linkCheck": "pass",
+      "outlineCheck": "pass",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "facade",
+        "node": "v24.15.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 12.4.1",
+        "shardpdf": "0.1.0",
+        "shardpdfProfile": "release",
+        "git": "f56cdc3-dirty"
+      },
+      "timestamp": "2026-09-16T12:02:22.900Z",
+      "notes": []
+    },
+    {
+      "iteration": 3,
+      "engine": "shardpdf-merge",
+      "mode": "outline",
+      "fixture": "full",
+      "scale": "full",
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 91226112,
+      "wallTimeMs": 162,
+      "outputBytes": 23676040,
+      "pageCountReported": 11164,
+      "pageCountActual": 11164,
+      "qpdfCheck": "pass",
+      "linkCheck": "pass",
+      "outlineCheck": "pass",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "facade",
+        "node": "v24.15.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 12.4.1",
+        "shardpdf": "0.1.0",
+        "shardpdfProfile": "release",
+        "git": "f56cdc3-dirty"
+      },
+      "timestamp": "2026-09-16T12:02:26.937Z",
+      "notes": []
+    },
+    {
+      "iteration": 4,
+      "engine": "shardpdf-merge",
+      "mode": "outline",
+      "fixture": "full",
+      "scale": "full",
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 91013120,
+      "wallTimeMs": 168,
+      "outputBytes": 23676040,
+      "pageCountReported": 11164,
+      "pageCountActual": 11164,
+      "qpdfCheck": "pass",
+      "linkCheck": "pass",
+      "outlineCheck": "pass",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "facade",
+        "node": "v24.15.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 12.4.1",
+        "shardpdf": "0.1.0",
+        "shardpdfProfile": "release",
+        "git": "f56cdc3-dirty"
+      },
+      "timestamp": "2026-09-16T12:02:30.986Z",
+      "notes": []
+    },
+    {
+      "iteration": 5,
+      "engine": "shardpdf-merge",
+      "mode": "outline",
+      "fixture": "full",
+      "scale": "full",
+      "outcome": "ok",
+      "peakProcessTreeRssBytes": 91226112,
+      "wallTimeMs": 158,
+      "outputBytes": 23676040,
+      "pageCountReported": 11164,
+      "pageCountActual": 11164,
+      "qpdfCheck": "pass",
+      "linkCheck": "pass",
+      "outlineCheck": "pass",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "machine": {
+        "tag": "facade",
+        "node": "v24.15.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "versions": {
+        "qpdf": "qpdf version 12.4.1",
+        "shardpdf": "0.1.0",
+        "shardpdfProfile": "release",
+        "git": "f56cdc3-dirty"
+      },
+      "timestamp": "2026-09-16T12:02:35.018Z",
+      "notes": []
+    }
+  ]
+}

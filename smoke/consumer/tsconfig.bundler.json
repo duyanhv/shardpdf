@@ -1,0 +1,15 @@
+{
+  "// why": "Floor Inspector's backend compiles with module ESNext + moduleResolution bundler (apps/backend/tsconfig.json). The public types must resolve under that mode too, not only nodenext.",
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": false,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "types": ["node"]
+  },
+  "include": ["types/esm/index.ts"]
+}

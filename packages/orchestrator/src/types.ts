@@ -10,6 +10,12 @@ export interface AdapterRef {
   module: string;
   /** Named export to use; defaults to `default`, then `adapter`. */
   export?: string;
+  /**
+   * Opaque version stamp folded into resume-cache keys. Bump it whenever the
+   * adapter's output could change for the same section data (template,
+   * font, or layout changes), or a stale shard cache will be reused.
+   */
+  version?: string;
 }
 
 export interface SectionSpec<TData = unknown> {

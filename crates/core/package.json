@@ -4,6 +4,24 @@
   "private": true,
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "native.js",
+    "native.d.ts",
+    "*.node",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
   "napi": {
     "binaryName": "shardpdf-core",
     "targets": [
@@ -21,26 +39,13 @@
     "fuzz": "rustup run nightly cargo fuzz run append_shard --fuzz-dir fuzz",
     "fuzz:seed": "cargo run --example gen_fuzz_seed",
     "test": "cargo test -p shardpdf-core && node --test \"test/*.test.js\"",
-    "test:bun": "bun test test/api.test.js",
-    "typecheck": "tsc --noEmit --allowJs --checkJs --module nodenext --moduleResolution nodenext --target es2022 --types node index.js test/api.test.js test/api-types.ts"
+    "test:bun": "bun test test/api.test.js test/public-api.test.js",
+    "typecheck": "tsc --noEmit --allowJs --checkJs --module nodenext --moduleResolution nodenext --target es2022 --types node index.js test/api.test.js test/public-api.test.js test/api-types.ts"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.8.2",
-    "@types/node": "^24"
-  },
-  "exports": {
-    ".": {
-      "types": "./index.d.ts",
-      "require": "./index.js",
-      "import": "./index.js"
-    }
-  },
-  "files": [
-    "index.js",
-    "index.d.ts",
-    "native.js",
-    "native.d.ts",
-    "README.md",
-    "*.node"
-  ]
+    "@types/node": "^24",
+    "pdfkit": "^0.19.1",
+    "@types/pdfkit": "^0.17.6"
+  }
 }

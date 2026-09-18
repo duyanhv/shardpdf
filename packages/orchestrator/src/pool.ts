@@ -34,14 +34,20 @@ const WORKER_PATH = fileURLToPath(new URL("./worker.ts", import.meta.url));
  * restarts that shard only — and a finished worker returns its memory to the
  * OS instead of to a long-lived pool process). Concurrency is a simple
  * semaphore; retries are per task with fresh processes.
+ *
+ * Call `dispose()` when the pool is no longer needed so the abort listener
+ * is removed from the caller's signal. A pool is single-use per `generate()`.
  */
 export class WorkerPool {
   private readonly concurrency: number;
   private readonly retries: number;
   private readonly signal: AbortSignal | undefined;
-  private active = new Set<ChildProcess>();
+  private readonly active = new Set<ChildProcess>();
   private running = 0;
-  private waiters: (() => void)[] = [];
+  private readonly waiters: (() => void)[] = [];
+  private readonly onAbort = (): void => {
+    for (const child of this.active) child.kill("SIGKILL");
+  };
 
   private readonly onRetry:
     | ((task: WorkerRequest, attempt: number, error: unknown) => void)
@@ -54,13 +60,18 @@ export class WorkerPool {
     /** Called before each re-attempt (attempt is 2-based: the retry number). */
     onRetry?: (task: WorkerRequest, attempt: number, error: unknown) => void;
   }) {
-    this.concurrency = Math.max(1, options.concurrency);
-    this.retries = Math.max(0, options.retries);
+    this.concurrency = Math.max(1, Math.floor(options.concurrency));
+    this.retries = Math.max(0, Math.floor(options.retries));
     this.signal = options.signal;
     this.onRetry = options.onRetry;
-    this.signal?.addEventListener("abort", () => {
-      for (const child of this.active) child.kill("SIGKILL");
-    });
+    this.signal?.addEventListener("abort", this.onAbort);
+  }
+
+  /** Kills any live workers and detaches from the abort signal. */
+  dispose(): void {
+    this.signal?.removeEventListener("abort", this.onAbort);
+    for (const child of this.active) child.kill("SIGKILL");
+    this.active.clear();
   }
 
   async run(task: WorkerRequest): Promise<MeasureResult | null> {
@@ -129,20 +140,24 @@ export class WorkerPool {
     });
   }
 
-  private async acquire(): Promise<void> {
+  private acquire(): Promise<void> {
     if (this.running < this.concurrency) {
       this.running++;
-      return;
+      return Promise.resolve();
     }
-    await new Promise<void>((resolve) => {
+    return new Promise<void>((resolve) => {
       this.waiters.push(resolve);
     });
-    this.running++;
   }
 
   private release(): void {
-    this.running--;
     const next = this.waiters.shift();
-    if (next !== undefined) next();
+    if (next !== undefined) {
+      // Hand the slot directly to the waiter: `running` stays constant, so
+      // a concurrent acquire() cannot slip in between release and resume.
+      next();
+      return;
+    }
+    this.running--;
   }
 }

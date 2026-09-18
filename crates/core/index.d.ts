@@ -1,19 +1,58 @@
-export type { OutlineEntry, ValidationReport } from "./native.js";
+export type {
+  BuildInfo,
+  LoadOptions,
+  OutlineEntry,
+  ValidationReport,
+} from "./native.js";
+export {
+  Assembly,
+  buildInfo,
+  Extractor,
+  extractPages,
+  extractSelection,
+  extractSelectionAsync,
+  pageCount,
+  pageCountAsync,
+  validate,
+} from "./native.js";
 
-/** Stable machine-readable error codes. Branch on these, never on message text. */
+/**
+ * Stable `error.code` values thrown by the native binding. Branch on these
+ * rather than on message text.
+ *
+ * This union covers native errors only. The JavaScript facade additionally
+ * throws plain `TypeError`/`RangeError` for argument validation, `AbortError`
+ * (`DOMException`) for cancellation, and ordinary Node filesystem errors
+ * (`ENOENT`, `EACCES`, ...) from its own rename/stat/cleanup steps.
+ */
 export type ShardPdfErrorCode =
-  | "PDF_PARSE"
-  | "IO"
-  | "MALFORMED_SHARD"
-  | "DUPLICATE_DESTINATION"
-  | "INVALID_RANGE"
-  | "DANGLING_DESTINATION"
-  | "ALREADY_FINALIZED"
-  | (string & {});
+  /** The input exists but could not be parsed as a PDF. */
+  | "SHARDPDF_PDF_PARSE"
+  /** Filesystem failure: input missing/unreadable or output unwritable. */
+  | "SHARDPDF_IO"
+  /** An input PDF parsed but violates a structural expectation. */
+  | "SHARDPDF_MALFORMED"
+  /** Method called on an assembly already consumed by finalize()/abort(). */
+  | "SHARDPDF_CONSUMED"
+  /**
+   * An argument had the wrong type, was an empty path, or was out of range.
+   * Includes every caller-supplied outline problem (shape, level jump, page
+   * index past the document) and every page-selection problem.
+   */
+  | "SHARDPDF_INVALID_ARG"
+  /**
+   * An unwinding panic inside the native core was caught at the boundary.
+   * Process-aborting failures (stack overflow, allocator OOM abort) are not
+   * catchable and still terminate the host.
+   */
+  | "SHARDPDF_PANIC"
+  /** Two shards contributed the same named destination. */
+  | "SHARDPDF_DUPLICATE_DESTINATION"
+  /** A named destination points at a page absent from the document. */
+  | "SHARDPDF_DANGLING_DESTINATION";
 
-export declare class ShardPdfError extends Error {
-  readonly name: "ShardPdfError";
-  readonly code: ShardPdfErrorCode;
+export interface ShardPdfError extends Error {
+  code: ShardPdfErrorCode;
 }
 
 export interface AssembleOutlineEntry {
@@ -24,6 +63,16 @@ export interface AssembleOutlineEntry {
   level?: number;
 }
 
+export interface AssembleShardInfo {
+  /** Position in `shards`. */
+  index: number;
+  path: string;
+  /** Pages contributed by this shard. */
+  pageCount: number;
+  /** Running total after this shard. */
+  totalPages: number;
+}
+
 export interface AssembleOptions {
   /** Complete, already-rendered PDF shards in append order. */
   shards: string[];
@@ -32,6 +81,17 @@ export interface AssembleOptions {
   outline?: AssembleOutlineEntry[];
   /** Observed before every shard and before finalization. */
   signal?: AbortSignal;
+  /**
+   * Called after each successful append. Throwing aborts the assembly and
+   * removes the partial output.
+   */
+  onShard?: (info: AssembleShardInfo) => void;
+  /**
+   * Bound on how far any one compressed stream may inflate while a shard is
+   * parsed. Unneeded for shards you rendered yourself; set it when untrusted
+   * files can reach this call. See `LoadOptions`.
+   */
+  maxDecompressedBytes?: number;
 }
 
 export interface AssembleResult {
@@ -54,67 +114,167 @@ export interface ExtractRange {
   output: string;
 }
 
-export interface ExtractOptions {
+export interface ExtractRangesOptions {
   input: string;
   ranges: ExtractRange[];
   /** Observed before every range. */
   signal?: AbortSignal;
 }
 
-export interface ExtractResult {
+export interface ExtractRangesResult {
   sourcePageCount: number;
   ranges: { output: string; pageCount: number }[];
 }
 
 /**
  * Slice page ranges out of a PDF, parsing the source exactly once. On error
- * or cancellation every slice written by this call is removed.
+ * or cancellation every slice written by this call is removed. Prefer this
+ * over repeated `extract` calls when you want several slices of one source.
+ */
+export declare function extractRanges(
+  options: ExtractRangesOptions,
+): Promise<ExtractRangesResult>;
+
+// ---------------------------------------------------------------------------
+// Operation facade: merge / extract / getPageCount
+//
+// These run their native work off the JavaScript thread (napi async tasks on
+// the libuv threadpool), so the event loop stays live while a document is
+// parsed or written. The synchronous natives (`pageCount`,
+// `extractSelection`, `extractPages`, `Assembly#appendShard` and friends)
+// stay exported for hosts that already isolate work in a child process.
+// ---------------------------------------------------------------------------
+
+/**
+ * A PDF to read: a filesystem path, a `file:` URL, or the document bytes.
+ * `Buffer` is accepted through its `Uint8Array` inheritance. Any other URL
+ * scheme is rejected with a `TypeError`; download remote content in the host.
+ */
+export type PDFSource = string | URL | Uint8Array;
+
+/** A file to write: a filesystem path or a `file:` URL. */
+export type PDFFile = string | URL;
+
+/**
+ * One bookmark in the output outline. `children` express nesting directly;
+ * the facade flattens them into the native preorder list.
+ */
+export interface PDFOutlineEntry {
+  title: string;
+  /** Zero-based page index in the output document. */
+  pageIndex: number;
+  children?: readonly PDFOutlineEntry[];
+}
+
+export interface PDFProgress {
+  operation: "merge" | "extract";
+  /** Input files completed for merge; selected pages completed for extract. */
+  completed: number;
+  total: number;
+  /** Cumulative output pages so far. */
+  pageCount: number;
+}
+
+export interface PDFOptions {
+  /**
+   * Cancellation input. Checked before each input (merge), before the native
+   * call (extract), and again before the output is published. Each native
+   * task runs on the libuv threadpool and cannot be interrupted: a task
+   * already in flight completes before the signal is observed at the next
+   * checkpoint. This is not a hard time or memory limit.
+   */
+  signal?: AbortSignal;
+  /**
+   * Extension beyond the base contract: bound on how far any one compressed
+   * stream may inflate while a document is parsed. Unneeded for files you
+   * rendered yourself; set it when untrusted input can reach these calls.
+   * See `LoadOptions`.
+   */
+  maxDecompressedBytes?: number;
+}
+
+export interface PDFWriteOptions extends PDFOptions {
+  /**
+   * Called synchronously on the caller's thread as work completes. Throwing
+   * rejects the operation before publication and removes the partial output.
+   */
+  onProgress?: (event: PDFProgress) => void;
+}
+
+export interface PDFResult {
+  pageCount: number;
+  /** Size of the published output file, from `fs.stat`. */
+  byteLength: number;
+}
+
+export interface PDFMergeResult extends PDFResult {
+  /** Per-input page counts and where each input starts in the output. */
+  inputs: readonly {
+    pageCount: number;
+    startPageIndex: number;
+  }[];
+}
+
+export interface PDFMergeOptions extends PDFWriteOptions {
+  /**
+   * Explicit output outline. Source bookmarks, forms, tags, signatures, and
+   * arbitrary document metadata are not merged.
+   */
+  outline?: readonly PDFOutlineEntry[];
+}
+
+export type PDFPageSelection =
+  /** Zero-based indices, in requested output order. Duplicates are rejected. */
+  | readonly number[]
+  /** Zero-based, end-exclusive: `0 <= start < end <= sourcePageCount`. */
+  | { start: number; end: number };
+
+export interface PDFExtractOptions extends PDFWriteOptions {
+  pages: PDFPageSelection;
+  /**
+   * Required acknowledgement of the first release's extraction limitation.
+   * Extraction drops ALL annotations (links, form widgets, every `/Annots`
+   * entry), named destinations, and outlines. Omitting the option or passing
+   * any other value throws a `TypeError`.
+   */
+  annotations: "drop";
+}
+
+/**
+ * Merge complete PDF documents, in order, into `output`.
+ *
+ * Writes a unique sibling temporary file and renames it into place after the
+ * native writer finalizes, so errors and cancellation leave an existing
+ * `output` untouched. `onProgress` fires after each input.
+ *
+ * Errors: native failures carry a `ShardPdfErrorCode`; argument problems are
+ * `TypeError`/`RangeError`; cancellation is an `AbortError`; the facade's own
+ * filesystem steps (rename, stat, cleanup) surface plain Node errors.
+ */
+export declare function merge(
+  inputs: readonly PDFSource[],
+  output: PDFFile,
+  options?: PDFMergeOptions,
+): Promise<PDFMergeResult>;
+
+/**
+ * Extract a page selection from `input` into `output`.
+ *
+ * The source is parsed once for the whole selection; an array preserves its
+ * order in the output. Selections must be non-empty, finite integers within
+ * `0..pageCount-1`, without duplicates. Same atomic publication and error
+ * classes as `merge`. `onProgress` fires once, after the selection is written.
  */
 export declare function extract(
-  options: ExtractOptions,
-): Promise<ExtractResult>;
+  input: PDFSource,
+  output: PDFFile,
+  options: PDFExtractOptions,
+): Promise<PDFResult>;
 
 /**
- * Single-range convenience with the qpdf argument shape (sync; blocks the
- * calling thread). Prefer `extract` for multiple ranges.
+ * Number of pages in `input`. Errors follow the same classes as `merge`.
  */
-export declare function extractPages(
-  inputPath: string,
-  startPage: number,
-  endPage: number,
-  outputPath: string,
-): number;
-
-/** Parses the document and returns its page count (sync). */
-export declare function pageCount(inputPath: string): number;
-
-/**
- * Structural validation (sync): parses, resolves every page, and verifies
- * every named destination targets a live page — the corruption qpdf --check
- * misses. Throws ShardPdfError (e.g. DANGLING_DESTINATION) on failure.
- */
-export declare function validate(
-  inputPath: string,
-): import("./native.js").ValidationReport;
-
-/** Streaming multi-shard assembly (low-level; prefer `assemble`). Sync calls. */
-export declare class Assembly {
-  constructor(outputPath: string);
-  /** Appends one complete single-shard PDF; returns its page count. */
-  appendShard(shardPath: string): number;
-  /** Total pages appended so far. */
-  get pageCount(): number;
-  /** Closes the partial output without finalizing it. Consumed. */
-  abort(): void;
-  /** Writes the assembled document, with optional bookmarks. Consumed. */
-  finalize(outline?: AssembleOutlineEntry[]): void;
-}
-
-/** Parses a source once; serves many page-range extractions (low-level, sync). */
-export declare class Extractor {
-  constructor(inputPath: string);
-  /** Total pages in the source. */
-  get pageCount(): number;
-  /** Extracts one inclusive, 1-based range; returns the slice's page count. */
-  extractRange(startPage: number, endPage: number, outputPath: string): number;
-}
+export declare function getPageCount(
+  input: PDFSource,
+  options?: PDFOptions,
+): Promise<number>;

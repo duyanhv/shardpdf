@@ -33,6 +33,8 @@
       "devDependencies": {
         "@napi-rs/cli": "^3.8.2",
         "@types/node": "^24",
+        "@types/pdfkit": "^0.17.6",
+        "pdfkit": "^0.19.1",
       },
     },
     "packages/orchestrator": {

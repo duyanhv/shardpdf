@@ -14,10 +14,10 @@ const { after, before, test } = require("node:test");
 const { promisify } = require("node:util");
 const {
   Assembly,
-  ShardPdfError,
   assemble,
-  extract,
+  buildInfo,
   extractPages,
+  extractRanges,
   pageCount,
   validate,
 } = require("..");
@@ -37,6 +37,11 @@ let workDir = "";
 let plainShardPath = "";
 
 before(async () => {
+  if (!(await qpdfAvailable())) {
+    console.warn(
+      "warning: qpdf not found; PDF validity checks are skipped in this run",
+    );
+  }
   workDir = await mkdtemp(path.join(tmpdir(), "shardpdf-core-api-"));
   plainShardPath = path.join(workDir, "plain-shard.pdf");
   await writePlainPdf(plainShardPath);
@@ -47,6 +52,13 @@ test("exposes native and high-level APIs to ESM consumers", async () => {
   const core = await import("../index.js");
   assert.equal(core.Assembly, Assembly);
   assert.equal(core.assemble, assemble);
+  assert.equal(core.buildInfo, buildInfo);
+});
+
+test("buildInfo reports the Cargo profile and crate version", () => {
+  const info = buildInfo();
+  assert.ok(["debug", "release"].includes(info.profile), info.profile);
+  assert.match(info.version, /^\d+\.\d+\.\d+/);
 });
 
 test("assemble promotes a valid multi-shard PDF", async () => {
@@ -74,10 +86,7 @@ test("assemble cleans partial output after a shard error", async () => {
 
   await assert.rejects(
     assemble({ shards: [seedPath, invalidPath], outputPath }),
-    (error) =>
-      error instanceof ShardPdfError &&
-      error.code === "PDF_PARSE" &&
-      !error.message.startsWith("["),
+    { code: "SHARDPDF_PDF_PARSE" },
   );
   await assert.rejects(stat(outputPath), { code: "ENOENT" });
   assert.deepEqual(await partialsFor(outputPath), []);
@@ -85,20 +94,47 @@ test("assemble cleans partial output after a shard error", async () => {
 
 test("errors carry stable codes, not just message prose", async () => {
   const outputPath = path.join(workDir, "codes.pdf");
-  await assert.rejects(
-    assemble({ shards: [seedPath, seedPath], outputPath }),
-    (error) =>
-      error instanceof ShardPdfError && error.code === "DUPLICATE_DESTINATION",
-  );
+  await assert.rejects(assemble({ shards: [seedPath, seedPath], outputPath }), {
+    code: "SHARDPDF_DUPLICATE_DESTINATION",
+  });
 
   const assembly = new Assembly(path.join(workDir, "codes-low.partial"));
   assembly.abort();
-  assert.throws(
-    () => assembly.appendShard(seedPath),
-    (error) =>
-      error instanceof ShardPdfError && error.code === "ALREADY_FINALIZED",
-  );
+  assert.throws(() => assembly.appendShard(seedPath), {
+    code: "SHARDPDF_CONSUMED",
+  });
   await rm(path.join(workDir, "codes-low.partial"));
+});
+
+test("assemble reports each shard through onShard and aborts if it throws", async () => {
+  const outputPath = path.join(workDir, "onshard.pdf");
+  /** @type {{index: number, pageCount: number, totalPages: number}[]} */
+  const seen = [];
+  const result = await assemble({
+    shards: [seedPath, plainShardPath],
+    outputPath,
+    onShard: ({ index, pageCount, totalPages }) =>
+      seen.push({ index, pageCount, totalPages }),
+  });
+  assert.deepEqual(result, { pageCount: 3 });
+  assert.deepEqual(seen, [
+    { index: 0, pageCount: 2, totalPages: 2 },
+    { index: 1, pageCount: 1, totalPages: 3 },
+  ]);
+
+  const rejectedPath = path.join(workDir, "onshard-rejected.pdf");
+  await assert.rejects(
+    assemble({
+      shards: [seedPath, plainShardPath],
+      outputPath: rejectedPath,
+      onShard: ({ index }) => {
+        if (index === 1) throw new Error("count mismatch");
+      },
+    }),
+    /count mismatch/,
+  );
+  await assert.rejects(stat(rejectedPath), { code: "ENOENT" });
+  assert.deepEqual(await partialsFor(rejectedPath), []);
 });
 
 test("assemble observes cancellation between shard appends", async () => {
@@ -147,7 +183,7 @@ test("extractPages slices a range out of an assembled document", async () => {
   }
 });
 
-test("extractPages rejects out-of-range and inverted ranges with INVALID_RANGE", async () => {
+test("extractPages rejects out-of-range and inverted ranges as SHARDPDF_MALFORMED", async () => {
   const sourcePath = path.join(workDir, "extract-bad-source.pdf");
   await assemble({ shards: [seedPath], outputPath: sourcePath }); // 2 pages
 
@@ -159,21 +195,32 @@ test("extractPages rejects out-of-range and inverted ranges with INVALID_RANGE",
   ]) {
     assert.throws(
       () => extractPages(sourcePath, start, end, outputPath),
-      (error) =>
-        error instanceof ShardPdfError && error.code === "INVALID_RANGE",
+      { code: "SHARDPDF_MALFORMED" },
       `range ${start}-${end} must be rejected`,
+    );
+  }
+  for (const [start, end] of [
+    [-1, 1],
+    [1.5, 2],
+    [Number.NaN, 1],
+    ["1", 2],
+  ]) {
+    assert.throws(
+      () => extractPages(sourcePath, asAny(start), asAny(end), outputPath),
+      { code: "SHARDPDF_INVALID_ARG" },
+      `range ${start}-${end} must be rejected before reaching the core`,
     );
   }
 });
 
-test("extract slices many ranges from one parse and cleans up on failure", async () => {
+test("extractRanges slices many ranges from one parse and cleans up on failure", async () => {
   const sourcePath = path.join(workDir, "extract-multi-source.pdf");
   await assemble({
     shards: [seedPath, plainShardPath, plainShardPath],
     outputPath: sourcePath,
   }); // 4 pages
 
-  const result = await extract({
+  const result = await extractRanges({
     input: sourcePath,
     ranges: [
       { startPage: 1, endPage: 2, output: path.join(workDir, "multi-a.pdf") },
@@ -191,7 +238,7 @@ test("extract slices many ranges from one parse and cleans up on failure", async
   // Second range invalid → the already-written first slice must be removed.
   const goodSlice = path.join(workDir, "multi-cleanup.pdf");
   await assert.rejects(
-    extract({
+    extractRanges({
       input: sourcePath,
       ranges: [
         { startPage: 1, endPage: 1, output: goodSlice },
@@ -202,7 +249,7 @@ test("extract slices many ranges from one parse and cleans up on failure", async
         },
       ],
     }),
-    (error) => error instanceof ShardPdfError && error.code === "INVALID_RANGE",
+    { code: "SHARDPDF_INVALID_ARG" },
   );
   await assert.rejects(stat(goodSlice), { code: "ENOENT" });
 });
@@ -221,19 +268,263 @@ test("pageCount and validate work without qpdf", async () => {
 
   const notPdf = path.join(workDir, "not-a.pdf");
   await writeFile(notPdf, "nope");
+  assert.throws(() => validate(notPdf), { code: "SHARDPDF_PDF_PARSE" });
+});
+
+test("every wrong-typed argument reports SHARDPDF_INVALID_ARG, not a napi status", () => {
+  const bad = [42, null, undefined, {}, ""].map(asAny);
+  for (const value of bad) {
+    assert.throws(
+      () => extractPages(value, 1, 1, "/tmp/never.pdf"),
+      { code: "SHARDPDF_INVALID_ARG" },
+      `inputPath=${String(value)}`,
+    );
+    assert.throws(() => new Assembly(value), { code: "SHARDPDF_INVALID_ARG" });
+  }
+  const assembly = new Assembly(path.join(workDir, "typed.partial"));
+  try {
+    for (const value of bad) {
+      assert.throws(
+        () => assembly.appendShard(value),
+        { code: "SHARDPDF_INVALID_ARG" },
+        `shardPath=${String(value)}`,
+      );
+    }
+  } finally {
+    assembly.abort();
+  }
+});
+
+test("a missing input file is SHARDPDF_IO, a corrupt one is SHARDPDF_PDF_PARSE", async () => {
+  const corrupt = path.join(workDir, "corrupt.pdf");
+  await writeFile(corrupt, "not a PDF");
   assert.throws(
-    () => validate(notPdf),
-    (error) => error instanceof ShardPdfError && error.code === "PDF_PARSE",
+    () =>
+      extractPages(
+        path.join(workDir, "does-not-exist.pdf"),
+        1,
+        1,
+        "/tmp/never.pdf",
+      ),
+    { code: "SHARDPDF_IO" },
+  );
+  assert.throws(() => extractPages(corrupt, 1, 1, "/tmp/never.pdf"), {
+    code: "SHARDPDF_PDF_PARSE",
+  });
+});
+
+test("finalize validates the outline shape and reports SHARDPDF_INVALID_ARG", () => {
+  /** @type {[string, unknown][]} */
+  const cases = [
+    ["not an array", "x"],
+    ["plain object", {}],
+    ["entry not object", [1]],
+    ["entry null", [null]],
+    ["title missing", [{ pageIndex: 0 }]],
+    ["title number", [{ title: 1, pageIndex: 0 }]],
+    ["pageIndex missing", [{ title: "a" }]],
+    ["pageIndex fractional", [{ title: "a", pageIndex: 0.5 }]],
+    ["pageIndex negative", [{ title: "a", pageIndex: -1 }]],
+    ["pageIndex string", [{ title: "a", pageIndex: "0" }]],
+    ["pageIndex NaN", [{ title: "a", pageIndex: Number.NaN }]],
+    ["level fractional", [{ title: "a", pageIndex: 0, level: 0.5 }]],
+    ["level negative", [{ title: "a", pageIndex: 0, level: -1 }]],
+    ["level string", [{ title: "a", pageIndex: 0, level: "0" }]],
+  ];
+  for (const [label, outline] of cases) {
+    const assembly = new Assembly(path.join(workDir, "outline-shape.partial"));
+    try {
+      assembly.appendShard(seedPath);
+      assert.throws(
+        () => assembly.finalize(asAny(outline)),
+        { code: "SHARDPDF_INVALID_ARG" },
+        label,
+      );
+      // A rejected outline must not consume the assembly.
+      assert.equal(assembly.consumed, false, `${label}: still usable`);
+    } finally {
+      assembly.abort();
+    }
+  }
+  // Structural problems in a caller-supplied outline are also the caller's
+  // bug, not the PDF's: INVALID_ARG, so hosts can distinguish "retry without
+  // an outline" from "the input is broken".
+  /** @type {[string, unknown][]} */
+  const structural = [
+    ["page out of range", [{ title: "a", pageIndex: 99 }]],
+    ["level jump", [{ title: "a", pageIndex: 0, level: 2 }]],
+  ];
+  for (const [label, outline] of structural) {
+    const assembly = new Assembly(path.join(workDir, "outline-struct.partial"));
+    assembly.appendShard(seedPath);
+    assert.throws(
+      () => assembly.finalize(asAny(outline)),
+      { code: "SHARDPDF_INVALID_ARG" },
+      label,
+    );
+  }
+  // level is optional at the native layer as well as in assemble().
+  const ok = new Assembly(path.join(workDir, "outline-ok.pdf"));
+  ok.appendShard(seedPath);
+  ok.finalize([
+    { title: "a", pageIndex: 0 },
+    { title: "b", pageIndex: 1, level: 1 },
+  ]);
+  assert.equal(ok.consumed, true);
+});
+
+test("maxDecompressedBytes bounds shard parsing (zip bomb)", async () => {
+  // A ~250 KB file whose object stream inflates to 32 MB. Built the same way
+  // as the Rust test; see assembler.rs bomb_shard for the layout.
+  const bombPath = path.join(workDir, "bomb.pdf");
+  await writeFile(bombPath, buildBombPdf(32 * 1024 * 1024));
+  assert.ok((await stat(bombPath)).size < 512 * 1024);
+
+  // Unbounded: a legal one-page document.
+  const unboundedOut = path.join(workDir, "bomb-unbounded.pdf");
+  const unbounded = await assemble({
+    shards: [bombPath],
+    outputPath: unboundedOut,
+  });
+  assert.equal(unbounded.pageCount, 1);
+
+  // Bounded: the oversized object stream is skipped, shard has no pages.
+  const started = performance.now();
+  await assert.rejects(
+    assemble({
+      shards: [bombPath],
+      outputPath: path.join(workDir, "bomb-bounded.pdf"),
+      maxDecompressedBytes: 1024 * 1024,
+    }),
+    { code: "SHARDPDF_MALFORMED" },
+  );
+  assert.ok(performance.now() - started < 200, "bounded load did not inflate");
+
+  // Same on the low-level class and on extractPages.
+  const low = new Assembly(path.join(workDir, "bomb-low.partial"), {
+    maxDecompressedBytes: 1024 * 1024,
+  });
+  try {
+    assert.throws(() => low.appendShard(bombPath), {
+      code: "SHARDPDF_MALFORMED",
+    });
+  } finally {
+    low.abort();
+  }
+  assert.throws(
+    () =>
+      extractPages(bombPath, 1, 1, path.join(workDir, "bomb-x.pdf"), {
+        maxDecompressedBytes: 1024 * 1024,
+      }),
+    { code: "SHARDPDF_MALFORMED" },
+  );
+
+  // Option validation.
+  for (const bad of [0, -1, 1.5, "1", {}]) {
+    assert.throws(
+      () =>
+        new Assembly(
+          path.join(workDir, "opt.partial"),
+          asAny({ maxDecompressedBytes: bad }),
+        ),
+      { code: "SHARDPDF_INVALID_ARG" },
+      `maxDecompressedBytes=${String(bad)}`,
+    );
+  }
+  assert.throws(
+    () => new Assembly(path.join(workDir, "opt.partial"), asAny("nope")),
+    { code: "SHARDPDF_INVALID_ARG" },
   );
 });
 
-test("low-level abort consumes the assembly and closes its writer", async () => {
+test("low-level abort is idempotent and consumes the assembly", async () => {
   const partialPath = path.join(workDir, "low-level.partial");
   const assembly = new Assembly(partialPath);
+  assert.equal(assembly.consumed, false);
   assembly.abort();
-  assert.throws(() => assembly.appendShard(seedPath), /already finalized/);
+  assembly.abort(); // second call is a no-op, not an error
+  assert.equal(assembly.consumed, true);
+  assert.throws(() => assembly.appendShard(seedPath), {
+    code: "SHARDPDF_CONSUMED",
+  });
+  assert.throws(() => assembly.pageCount, { code: "SHARDPDF_CONSUMED" });
   await rm(partialPath);
 });
+
+/**
+ * Deliberately wrong-typed values for negative tests; the .d.ts says string
+ * and number, and that is what we are checking the native layer enforces.
+ * @param {unknown} value
+ * @returns {any}
+ */
+function asAny(value) {
+  return value;
+}
+
+/**
+ * A PDF whose /ObjStm holds the catalog, pages, and page followed by
+ * `inflatedBytes` of whitespace, referenced from an xref stream.
+ * @param {number} inflatedBytes
+ */
+function buildBombPdf(inflatedBytes) {
+  const { deflateSync } = require("node:zlib");
+  const objs = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+  ];
+  let header = "";
+  const inner = [];
+  let innerLen = 0;
+  objs.forEach((o, i) => {
+    header += `${i + 1} ${innerLen} `;
+    const b = Buffer.from(`${o}\n`, "latin1");
+    inner.push(b);
+    innerLen += b.length;
+  });
+  inner.push(Buffer.alloc(inflatedBytes, 0x20));
+  const payload = Buffer.concat([Buffer.from(header, "latin1"), ...inner]);
+  const packed = deflateSync(payload, { level: 9 });
+  const parts = [Buffer.from("%PDF-1.5\n", "latin1")];
+  let len = parts[0].length;
+  const objstmOff = len;
+  const objstmHead = Buffer.from(
+    `4 0 obj\n<< /Type /ObjStm /N 3 /First ${header.length} /Filter /FlateDecode /Length ${packed.length} >>\nstream\n`,
+    "latin1",
+  );
+  const objstmTail = Buffer.from("\nendstream\nendobj\n", "latin1");
+  parts.push(objstmHead, packed, objstmTail);
+  len += objstmHead.length + packed.length + objstmTail.length;
+  const xrefOff = len;
+  /** @param {number} t @param {number} f2 @param {number} f3 */
+  const row = (t, f2, f3) => {
+    const b = Buffer.alloc(7);
+    b[0] = t;
+    b.writeUInt32BE(f2, 1);
+    b.writeUInt16BE(f3, 5);
+    return b;
+  };
+  const rows = Buffer.concat([
+    row(0, 0, 65535),
+    row(2, 4, 0),
+    row(2, 4, 1),
+    row(2, 4, 2),
+    row(1, objstmOff, 0),
+    row(1, xrefOff, 0),
+  ]);
+  parts.push(
+    Buffer.from(
+      `5 0 obj\n<< /Type /XRef /Size 6 /W [1 4 2] /Root 1 0 R /Length ${rows.length} >>\nstream\n`,
+      "latin1",
+    ),
+    rows,
+    Buffer.from(
+      `\nendstream\nendobj\nstartxref\n${xrefOff}\n%%EOF\n`,
+      "latin1",
+    ),
+  );
+  return Buffer.concat(parts);
+}
 
 /** @param {string} outputPath */
 async function partialsFor(outputPath) {
