@@ -111,7 +111,7 @@ shardpdf/
   packages/pipeline/          planned host-agnostic resume/resource primitives
   packages/orchestrator/      implemented two-pass scheduler and worker pool
   packages/adapter-takumi/    planned flagship adapter
-  packages/adapter-pdfkit/    planned migration adapter
+  packages/adapter-pdfkit/    implemented migration adapter
   benchmarks/                 synthetic and production-corpus benchmarks
   docs/specs/                 design and implementation plan
 ```

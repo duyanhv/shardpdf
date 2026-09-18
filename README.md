@@ -10,6 +10,10 @@ Rust core exposed through napi-rs, orchestrated from TypeScript.
 - **`packages/orchestrator`** (`@shardpdf/orchestrator`): two-pass
   measure/render scheduler with isolated worker processes, resume cache, and
   progress events on top of the core.
+- **`packages/adapter-pdfkit`** (`@shardpdf/adapter-pdfkit`): renders shards
+  with PDFKit. Sections become templates with a cheap `pages()` measurement and
+  a `draw()` per page, plus a deduplicating image cache that makes the
+  per-page-XObject failure mode unexpressible.
 - **`benchmarks/`**: the memory problem this solves, measured against
   pdf-lib, pdfkit, react-pdf, and pdf-merger-js under a t3.small-class cap.
 - **`docs/specs/`**: design and implementation plan.

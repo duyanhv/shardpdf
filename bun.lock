@@ -37,6 +37,21 @@
         "pdfkit": "^0.19.1",
       },
     },
+    "packages/adapter-pdfkit": {
+      "name": "@shardpdf/adapter-pdfkit",
+      "version": "0.1.0",
+      "dependencies": {
+        "@shardpdf/orchestrator": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "^24",
+        "@types/pdfkit": "^0.17.6",
+        "pdfkit": "^0.19.1",
+      },
+      "peerDependencies": {
+        "pdfkit": ">=0.19.0",
+      },
+    },
     "packages/orchestrator": {
       "name": "@shardpdf/orchestrator",
       "version": "0.1.0",
@@ -270,6 +285,8 @@
     "@react-pdf/textkit": ["@react-pdf/textkit@6.3.0", "", { "dependencies": { "@react-pdf/fns": "3.1.3", "bidi-js": "^1.0.2", "hyphen": "^1.6.4", "unicode-properties": "^1.4.1" } }, "sha512-v6+V8nAcVwm7s2s1jIG2MD3Iw//x/k+XrH1foWOELBE4b32pyDgKyPXN/6KJE0dnX7+fVy27uctLNCLNMvzKzQ=="],
 
     "@react-pdf/types": ["@react-pdf/types@2.11.1", "", { "dependencies": { "@react-pdf/font": "^4.0.8", "@react-pdf/primitives": "^4.3.0", "@react-pdf/stylesheet": "^6.2.1" } }, "sha512-i9xQgfaDU9QoeNnbp6rltXCWg1huEh195rpOuN8cE4BZ2FuLdQrsIcb2dhFF9aOxXf+XBA6LOSpIW051MDD/bw=="],
+
+    "@shardpdf/adapter-pdfkit": ["@shardpdf/adapter-pdfkit@workspace:packages/adapter-pdfkit"],
 
     "@shardpdf/core": ["@shardpdf/core@workspace:crates/core"],
 
