@@ -200,6 +200,29 @@ text) than the synthetic page did, so the image cost is a smaller share of the
 total. The XObject collapse and output-size win reproduce almost exactly.
 **−36% peak RSS at 120 units is the figure to quote.**
 
+### And on Linux, under a real cgroup cap
+
+Everything above is macOS and uncapped. Re-run on `node:24-bookworm-slim`
+(glibc, matching Floor's Debian EC2 host) under Docker memory limits, the
+conclusion holds and sharpens into a qualitative difference:
+
+| cgroup cap | naive | cached |
+| --- | --- | --- |
+| 300 MB | peak **300 MB** (at the cap) | peak **54 MB** |
+| 200 MB | peak **200 MB** (at the cap) | peak **82 MB** |
+| 150 MB | **OOM-killed, exit 137** | peak **45 MB** |
+| 120 MB | **OOM-killed, exit 137** | peak **45 MB** |
+
+**The pre-fix path is killed by the kernel OOM killer at a 150 MB cap; the
+fixed path completes at 120 MB using 45 MB.** Uncapped macOS measurement could
+not show this, because nothing was enforcing a limit. Rendering is
+pixel-identical on Linux as well (pages 1, 60, 120 rasterized with `pdftoppm`,
+byte-identical).
+
+Caveat: arm64 Docker, not Floor's x86_64 EC2, so the exact OOM threshold is
+indicative rather than a production number. Probe and full results:
+`docs/benchmarks/probes/2026-09-18-render-cost/linux-cap/`.
+
 Note that `memo` alone (caching the Buffer) recovers the rasterization but
 *not* the XObject duplication — the PDF is still 6.8 MB and RSS still 323 MB.
 The fix must also let pdfkit dedupe, via `doc.openImage()` (no temp files) or a
@@ -419,10 +442,13 @@ node ffi-bench.mjs 9
 
 ## 7. Caveats
 
-- Apple Silicon, uncapped. Floor's own docs note the per-page slope is ~1.5x
-  higher on macOS than on their Linux box while the *floor* is platform-stable,
-  so the ratios above should hold but the absolute MB/page should be
-  re-measured on the t3.small before being quoted.
+- Most figures here are Apple Silicon and uncapped. The gauge-dedupe result has
+  since been re-measured on Linux (glibc) under real cgroup caps, where it holds
+  and sharpens: the pre-fix path is OOM-killed at 150 MB while the fixed path
+  runs in 45 MB (§3). That run is arm64 Docker rather than Floor's x86_64 EC2,
+  so the exact OOM threshold is indicative. The FFI and per-page-slope numbers
+  in §2 and §4 remain macOS-only; their ratios should hold, but absolute
+  MB/page and ns/call should be re-measured on the target before being quoted.
 - The Floor-shaped page in these probes is synthetic: 6 cards, 8 table rows,
   a footer, Korean labels, one gauge. It reproduces the measured call census
   (713 calls/page, 452 measurements) but is not a real report. The canvas

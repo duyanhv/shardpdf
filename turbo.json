@@ -6,7 +6,9 @@
     "PROBE_COVER_DIR",
     "PROBE_OUT_DIR",
     "SHARDPDF_BENCH_KOREAN_FONT",
-    "SHARDPDF_BENCH_KOREAN_FONT_FACE"
+    "SHARDPDF_BENCH_KOREAN_FONT_FACE",
+    "PAGES",
+    "MODE"
   ],
   "tasks": {
     "build": {
