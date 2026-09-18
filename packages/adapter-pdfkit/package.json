@@ -7,7 +7,8 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"test/*.test.ts\""
+    "test": "node --test \"test/adapter.test.ts\" \"test/dedupe-control.test.ts\"",
+    "soak": "SOAK=1 node --test \"test/soak.test.ts\""
   },
   "peerDependencies": {
     "@shardpdf/orchestrator": ">=0.1.0",

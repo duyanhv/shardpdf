@@ -162,6 +162,25 @@ naive `Buffer` pattern to prove the guard still fails when the bug is present.
 Verified by mutation: bypassing the cache in the fixture makes the guard report
 120 rasterizes instead of 6.
 
+There is also a soak test, opt-in because it renders thousands of real pages:
+
+```bash
+bun run --cwd packages/adapter-pdfkit soak
+```
+
+It samples the whole **process tree** (the adapter runs in forked workers, so a
+parent-only sampler would miss it) and asserts two things at 1,000 vs 3,000
+pages: peak RSS does not grow with the document, and the image cache still
+holds — 8 shards x 6 distinct gauges = 48 rasterizations for 3,000 pages, not
+3,000. Measured: 473 MB vs 595 MB peak for a 3x document, 1.77 MB output.
+
+Bypassing the cache makes it fail with "expected 48 rasterizes, got 3000".
+Worth knowing what it does *not* catch: retaining memory per page inside the
+adapter does not fail it, because the orchestrator forks a fresh worker per
+shard and exits it afterwards, so nothing adapter-side outlives one shard. The
+test covers the parent side of that boundary, where an unbounded working set
+would actually come from.
+
 qpdf is an optional oracle; structural assertions skip without it.
 
 The packaged-consumption path is separate, and is what catches defects the
