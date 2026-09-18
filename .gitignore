@@ -11,3 +11,7 @@ benchmarks/out/
 crates/core/fuzz/corpus/append_shard/*
 !crates/core/fuzz/corpus/append_shard/seed-shard.pdf
 crates/core/fuzz/artifacts/
+
+# Consumer smoke scratch: packed tarballs + an unpacked node_modules tree.
+smoke/adapter-consumer/.work/
+smoke/consumer/vendor/

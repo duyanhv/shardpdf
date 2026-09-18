@@ -107,6 +107,26 @@ Rust earns its place in `@shardpdf/core`'s assembly, where one coarse call
 amortizes across thousands of pages (87 MB and 0.16 s on 11,164 pages). Same
 language, opposite economics. Full numbers and reproduction in the audit.
 
+## Installing it (current constraint)
+
+This package ships **TypeScript source**, like `@shardpdf/orchestrator`. Two
+consequences, both measured by `smoke/adapter-consumer/run.sh`:
+
+- **Bun consumes an installed tarball fine.** Verified end to end from outside
+  the monorepo: 90 pages over 3 shards, 15 image XObjects, outline intact,
+  `qpdf --check` clean.
+- **Node cannot.** `import` of the installed package fails with
+  `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, because Node refuses to strip
+  types inside `node_modules`. This affects the orchestrator identically and is
+  pre-existing, not specific to this package. Until these packages ship
+  compiled JS, a Node host must consume them from source (the workspace) rather
+  than from a tarball.
+
+`@shardpdf/orchestrator` and `pdfkit` are **peer** dependencies: an adapter is
+a plugin, and the host must own both versions. Since neither shardpdf package
+is published yet, an external consumer installs `file:` tarballs the way Floor
+Inspector already does for `@shardpdf/core`.
+
 ## Errors
 
 | Error | When |

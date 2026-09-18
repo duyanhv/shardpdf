@@ -1034,12 +1034,26 @@ mod tests {
     /// surface the error), so the shard arrives with no pages and the
     /// assembler rejects it as malformed. The important property is that
     /// the payload is never allocated; the unbounded load is the control.
+    ///
+    /// The "never allocated" property is asserted by *comparing* the bounded
+    /// and unbounded loads of the same shard, not by an absolute wall-clock
+    /// budget. An earlier version required the bounded load to finish in under
+    /// 50 ms, which failed 3 runs in 5 on a loaded machine (observed: 127 ms)
+    /// while the code was working correctly — a timing proxy, not a property.
+    /// The ratio holds regardless of machine speed because inflating 32 MiB is
+    /// orders of magnitude more work than skipping it.
     #[test]
     fn decompression_limit_rejects_a_zip_bomb_before_it_inflates() {
         let bytes = bomb_shard(32 * 1024 * 1024);
-        let path = std::env::temp_dir().join("shardpdf-core-test-bomb.pdf");
+        // Unique per run: fixed names collide when two test processes overlap.
+        let stem = format!(
+            "shardpdf-core-test-bomb-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        );
+        let path = std::env::temp_dir().join(format!("{stem}.pdf"));
         std::fs::write(&path, &bytes).unwrap();
-        let out = std::env::temp_dir().join("shardpdf-core-test-bomb-out.pdf");
+        let out = std::env::temp_dir().join(format!("{stem}-out.pdf"));
 
         let mut bounded = Assembly::with_options(
             &out,
@@ -1050,22 +1064,29 @@ mod tests {
         .unwrap();
         let started = std::time::Instant::now();
         let result = bounded.append_shard_file(&path);
-        let elapsed = started.elapsed();
+        let bounded_elapsed = started.elapsed();
         assert!(
             matches!(result, Err(AssemblyError::Malformed(ref m)) if m.contains("no pages")),
             "expected rejection, got {result:?}"
         );
-        assert!(
-            elapsed < std::time::Duration::from_millis(50),
-            "bounded load took {elapsed:?}; the payload was inflated"
-        );
 
-        // Control: same shard, no limit, is a legal one-page document.
-        let mut unbounded = Assembly::new(&out).unwrap();
+        // Control: same shard, no limit, is a legal one-page document — and
+        // pays the full inflation cost, which is the baseline to compare against.
+        let out_unbounded = std::env::temp_dir().join(format!("{stem}-out-unbounded.pdf"));
+        let mut unbounded = Assembly::new(&out_unbounded).unwrap();
+        let started = std::time::Instant::now();
         assert_eq!(unbounded.append_shard_file(&path).unwrap(), 1);
+        let unbounded_elapsed = started.elapsed();
+
+        assert!(
+            bounded_elapsed * 4 < unbounded_elapsed,
+            "bounded load ({bounded_elapsed:?}) should be far cheaper than the \
+             inflating load ({unbounded_elapsed:?}); the payload was likely inflated"
+        );
 
         std::fs::remove_file(&path).ok();
         std::fs::remove_file(&out).ok();
+        std::fs::remove_file(&out_unbounded).ok();
     }
 
     /// Modern producers pack objects into /ObjStm containers and use xref

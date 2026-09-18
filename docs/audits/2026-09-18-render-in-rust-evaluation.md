@@ -7,10 +7,21 @@ ceiling and improve performance.
 **Answer: no, not yet — and the measurements say the renderer is not where the
 problem is.** The dominant cost in Floor's render child is not PDF
 serialization. It is a redundant per-page `node-canvas` rasterization plus the
-PDF XObject duplication it causes, both of which are removable in JavaScript
-for a **~3.2x peak-RSS reduction and a ~12x speedup**, with pixel-identical
-output. A Rust renderer would not address either, and would have to overcome an
-FFI cost that the same measurements show is unfavorable for this workload.
+PDF XObject duplication it causes, both of which are removable in JavaScript.
+Measured on Floor's **real** unit renderer at 120 units: **peak RSS −32%
+(370 → 253 MB), image XObjects −96% (240 → 10), output −63%**, pixel-identical,
+with Floor's own 54 PDF tests still passing. A Rust renderer would not address
+either cause, and would have to overcome an FFI cost that the same measurements
+show is unfavorable for this workload.
+
+**Scope caveat, important for planning.** A separate Floor-side benchmark run
+the same day (`docs/audit/2026-09-18-shardpdf-t3small-memory-benchmark.md` in
+the Floor repo) measured the whole export pipeline end to end and found the
+**snapshot child**, not the render children, is the process ceiling:
+1,197-1,323 MB uncapped versus ~500 MB for a render child. So this fix makes
+render children meaningfully cheaper and their output much smaller, but it is
+not by itself the fix for Floor's t3.small capacity problem. Read both
+findings together.
 
 All numbers below are reproducible with the probes in
 `docs/benchmarks/probes/2026-09-18-render-cost/` (see its README). Host: Apple
@@ -149,9 +160,45 @@ The cover was converted to JPEG; the per-page charts were not.
 | `memo-path` (memoize to a temp file) | 6 | 277,400 | **114 MB** | 2.6 s |
 | `openimage` (memoize `doc.openImage()`) | 6 | 277,400 | **109-114 MB** | **3.1-3.6 s** |
 
-**About 3.2x less peak RSS, roughly 12x faster, 24.6x smaller output.** Ranges
-are across repeated runs; the wall-clock figures are noisier than the RSS ones,
-so treat the ratio rather than the absolute seconds as the result.
+### Confirmed on Floor's real renderer (2026-09-18, same day)
+
+The table above is synthetic. It has since been reproduced against **Floor's
+own `renderUnitAnalysisPages`**, its own `renderAverageGauge`, and its real
+`NotoSansKR` OTFs, with a deterministic in-process unit fixture (no DB, Redis,
+or Nest needed: the unit renderer takes a plain snapshot object). Harness:
+`apps/backend/scripts/bench/unit-gauge-dedupe/measure.ts` in the Floor repo.
+
+Because `analysis-unit.ts` imports `renderAverageGauge` directly and an ESM
+namespace is sealed, the probe intercepts `doc.image` instead. That is the
+better boundary anyway: it observes exactly what Floor hands PDFKit, which is
+what decides whether an XObject is duplicated.
+
+| Floor's real unit renderer | naive (today) | deduped | change |
+| --- | --- | --- | --- |
+| 60 units: peak RSS | 274 MB | 229 MB | −16% |
+| 60 units: wall | 12.3 s | 9.9 s | −19% |
+| 60 units: output | 1,417,018 B | 584,660 B | −59% |
+| 120 units: peak RSS | 370 MB | 253 MB | **−32%** |
+| 120 units: wall | 19.0 s | 15.4 s | −19% |
+| 120 units: output | 2,760,474 B | 1,020,047 B | **−63%** |
+| 120 units: image XObjects | **240** | **10** | **−96%** |
+
+Buffer-valued `doc.image` calls: 120 of 120 at 120 units, i.e. every unit page,
+confirming the source reading. Distinct images: 5 (the grades present in the
+fixture).
+
+Output equivalence was verified the same way as before, on decoded pixels
+rather than file bytes: pages 1, 60, and 120 of the 120-unit documents are
+**pixel-identical** (matching IHDR, 2,004,802 identical pixel bytes each), and
+both PDFs are `qpdf --check` clean. Floor's own PDF test suite (54 tests, 10
+suites) passes unchanged.
+
+The real-renderer gain is smaller than the synthetic 3.2x because Floor's unit
+pages carry far more non-image content (tables, charts, Korean text) than the
+synthetic page did, so the image cost is a smaller share of the total. The
+direction, the XObject collapse, and the output-size win all reproduce; the
+memory headline for Floor is **−32% peak RSS at 120 units, not −68%**. The
+32% figure is the one to quote.
 
 Note that `memo` alone (caching the Buffer) recovers the rasterization but
 *not* the XObject duplication — the PDF is still 6.8 MB and RSS still 323 MB.
@@ -268,8 +315,9 @@ per page. Same language, opposite economics.
 1. **Memoize the per-page gauge by `(grade, profile)` and hand pdfkit a
    dedupable handle.** Cache `doc.openImage(buffer)` per document, or render the
    ≤12 gauges once into the chunk work directory and pass paths. Measured on
-   400 pages: 386 → 114 MB peak, 45.3 → 3.6 s, 6.83 → 0.28 MB output. At Floor's
-   60-unit chunk: 167 → 107 MB.
+   Floor's **real** renderer at 120 units: 370 → 253 MB peak, 240 → 10 image
+   XObjects, 2.76 → 1.02 MB output, 19.0 → 15.4 s, pixel-identical. At Floor's
+   60-unit chunk size: 274 → 229 MB.
 2. **Emit chart images as JPEG where the chart is opaque.** Same 300-page
    comparison: PNG 320 MB peak vs JPEG 204 MB. This is Floor's own documented
    cover rule, not yet applied to `chart-renderer`.
