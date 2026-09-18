@@ -1,6 +1,11 @@
 [workspace]
 members = ["crates/core"]
-exclude = ["crates/core/fuzz"]
+exclude = [
+  "crates/core/fuzz",
+  # Standalone measurement addon for the 2026-09-18 render-cost audit. Built
+  # on demand with its own --manifest-path; never part of a workspace build.
+  "docs/benchmarks/probes/2026-09-18-render-cost/ffi-bench",
+]
 resolver = "2"
 
 [profile.release]

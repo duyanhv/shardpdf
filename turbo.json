@@ -1,5 +1,13 @@
 {
   "$schema": "https://turborepo.com/schema.json",
+  "globalPassThroughEnv": [
+    "FLOOR_ROOT",
+    "PROBE_FONT_DIR",
+    "PROBE_COVER_DIR",
+    "PROBE_OUT_DIR",
+    "SHARDPDF_BENCH_KOREAN_FONT",
+    "SHARDPDF_BENCH_KOREAN_FONT_FACE"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
