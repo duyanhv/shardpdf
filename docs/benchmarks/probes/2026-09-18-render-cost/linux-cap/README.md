@@ -14,13 +14,19 @@ One mode per container. Run on **both** architectures: arm64 native, and x86_64
 
 ### x86_64 — Floor's production architecture
 
+Process RSS, median of 3 runs. **Use `rssPeak`, not `cgroupPeak`**: the cgroup
+counter also charges page cache for the written PDF and the `qpdf` subprocess,
+so it is noisy run to run (observed 80-200 MB for the *same* cached workload)
+while process RSS is stable to ~1 MB. An earlier version of this table quoted
+single `cgroupPeak` samples and carried two outliers because of it.
+
 | cap | naive | cached |
 | --- | --- | --- |
-| 300 MB | cgroup peak **228 MB**, RSS Δ89 MB, 3,216 ms | cgroup peak **81 MB**, RSS Δ14 MB, 485 ms |
-| 200 MB | **OOM-killed (exit 137)** | cgroup peak **129 MB** |
-| 150 MB | **OOM-killed (exit 137)** | cgroup peak **83 MB** |
-| 120 MB | **OOM-killed (exit 137)** | cgroup peak **83 MB** |
-| 100 MB | **OOM-killed (exit 137)** | cgroup peak **84 MB** |
+| 300 MB | RSS peak **195 MB**, Δ90 MB, 3,216 ms | RSS peak **120 MB**, Δ15 MB, 485 ms |
+| 200 MB | **OOM-killed (exit 137)** | completes, RSS peak **~120 MB** |
+| 150 MB | **OOM-killed (exit 137)** | completes |
+| 120 MB | **OOM-killed (exit 137)** | completes |
+| 100 MB | **OOM-killed (exit 137)** | completes, cgroup peak 83 MB |
 
 ### arm64
 
@@ -35,7 +41,7 @@ Identical on both: image XObjects **240 → 12**, rasterizations **120 → 6**,
 output **2,305,712 → 166,465 B**, and ~7-10x on wall clock.
 
 **On x86_64 the naive path is OOM-killed at a 200 MB cap; the cached path
-completes at 100 MB using 84 MB.** The pre-fix path fails *earlier* on x86_64
+completes at every cap down to 100 MB.** The pre-fix path fails *earlier* on x86_64
 than on arm64 (200 MB vs 150 MB), so the arm64 figures were the optimistic
 case, not the pessimistic one. This is a qualitative difference the macOS
 measurements could not show, because nothing enforced a limit there.
@@ -85,5 +91,7 @@ a memory-starved instance instead of thrashing.
   so it cancels from the comparison. The end-to-end figures against Floor's
   real `renderUnitAnalysisPages` are in
   `apps/backend/scripts/bench/unit-gauge-dedupe/` in the Floor repo.
-- The absolute RSS deltas move a few MB between runs; the XObject counts, the
-  OOM threshold, and the output sizes are stable.
+- The absolute RSS deltas move a few MB between runs. `cgroupPeak` moves much
+  more (it includes page cache and the qpdf subprocess), so quote `rssPeak`.
+  The XObject counts, the OOM threshold, and the output sizes are stable across
+  every run.

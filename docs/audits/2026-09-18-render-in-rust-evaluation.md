@@ -209,16 +209,20 @@ conclusion holds and sharpens into a qualitative difference:
 Run on **both** architectures, including x86_64, which is what Floor's EC2
 host runs:
 
+x86_64 process RSS, median of 3 runs (the cgroup counter also charges page
+cache and the `qpdf` subprocess, so it swings 80-200 MB for identical work and
+is not the number to quote):
+
 | cgroup cap | naive (x86_64) | cached (x86_64) | naive (arm64) | cached (arm64) |
 | --- | --- | --- | --- | --- |
-| 300 MB | peak 228 MB | peak **81 MB** | peak 300 MB (at cap) | peak **54 MB** |
-| 200 MB | **OOM, exit 137** | peak **129 MB** | peak 200 MB (at cap) | peak **82 MB** |
-| 150 MB | **OOM, exit 137** | peak **83 MB** | **OOM, exit 137** | peak **45 MB** |
-| 120 MB | **OOM, exit 137** | peak **83 MB** | **OOM, exit 137** | peak **45 MB** |
-| 100 MB | **OOM, exit 137** | peak **84 MB** | — | — |
+| 300 MB | RSS peak 195 MB | RSS peak **120 MB** | at cap | peak **54 MB** |
+| 200 MB | **OOM, exit 137** | completes | at cap | peak **82 MB** |
+| 150 MB | **OOM, exit 137** | completes | **OOM, exit 137** | peak **45 MB** |
+| 120 MB | **OOM, exit 137** | completes | **OOM, exit 137** | peak **45 MB** |
+| 100 MB | **OOM, exit 137** | completes | — | — |
 
 **On Floor's architecture the pre-fix path is killed by the kernel OOM killer
-at a 200 MB cap, while the fixed path completes at 100 MB using 84 MB.**
+at a 200 MB cap, while the fixed path completes at every cap down to 100 MB.**
 Uncapped macOS measurement could not show this, because nothing was enforcing a
 limit. Note the pre-fix path fails *earlier* on x86_64 than on arm64, so the
 arm64 numbers were the optimistic case. Rendering is pixel-identical on both
