@@ -47,7 +47,7 @@ path-keyed `_imageRegistry` and embeds a fresh XObject every page.
 | --- | --- |
 | `probe.mjs <stage> [pages]` | Stagewise RSS: node, pdfkit module, Korean OTF parse, cover embed, per-page slope. Stages: `baseline`, `fonts`, `cover`, `pages`, `pages-images`. |
 | `font-probe.mjs [glyphs]` | Does font cost scale with glyphs or pages? (Glyphs.) |
-| `format-probe.mjs <pages> <png\|jpeg>` | Is the per-page chart format a memory slope? (Yes: 320 vs 204 MB at 300 pages.) |
+| `format-probe.mjs <pages> <png\|jpeg>` | Is the per-page chart format a memory slope? (320 vs 204 MB at 300 pages — but see the caveat below: this shape does not match Floor, and the conclusion drawn from it was withdrawn.) |
 | `canvas-probe.mjs <pages> <canvas\|embed>` | Splits canvas rasterization from pdfkit embedding. |
 | `callcount.mjs` | Per-page pdfkit call census: 713 calls, 452 blocking measurement queries. |
 | `measure-cost.mjs [trials]` | Median cost of pdfkit's `widthOfString`/`heightOfString`. |
@@ -77,4 +77,14 @@ node ffi-bench.mjs
   footer, Korean labels, one gauge). It reproduces the measured call census but
   is not a real report. The dedupe finding does not depend on that shaping: it
   follows from `renderAverageGauge`'s 12-value output space and pdfkit's
-  path-only image registry, both read from source.
+  path-only image registry, both read from source, and it was later confirmed
+  on Floor's real renderer.
+- **`format-probe.mjs` embeds a distinct image on every page, and that shape
+  misled me.** It is a fair measurement of *that* workload, but Floor passes
+  charts as file paths, which pdfkit dedupes, and has roughly one chart per
+  block/type rather than one per page. The "convert charts to JPEG"
+  recommendation drawn from this probe was measured against the real pipeline
+  and **withdrawn** (audit §5 step 2): the cost is per distinct chart, not per
+  page, and JPEG makes flat-colour chart line art ~13x larger. Treat this probe
+  as answering "what does a distinct alpha PNG per page cost", not "what should
+  Floor's chart format be".

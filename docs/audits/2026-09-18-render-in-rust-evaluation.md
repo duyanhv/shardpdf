@@ -148,9 +148,11 @@ Two independent costs follow:
    *fresh* image XObject. Verified: 400 pages produced **800 `/Subtype /Image`
    objects**; deduped, **12**.
 
-Also note the gauge PNGs are RGBA from `toBuffer("image/png")` — precisely the
-alpha-PNG case Floor's own `export-engine-infra.md` says pdfkit fully decodes.
-The cover was converted to JPEG; the per-page charts were not.
+The gauge PNGs are also RGBA from `toBuffer("image/png")`, which is the
+alpha-PNG case Floor's `export-engine-infra.md` warns about. That turned out to
+be a red herring for *charts* (see §5 step 2: the format costs a few MB of
+transient RSS per distinct chart, and JPEG would make these flat-colour images
+13x **larger**). The cost that mattered was the duplication, not the format.
 
 ### Measured, 400 pages, 6 distinct grades
 
@@ -317,9 +319,37 @@ have since shipped; step 2 has not.
    units: 351 → 223 MB peak, 240 → 10 image XObjects, 2.76 → 1.02 MB output,
    16.2 → 8.1 s, pixel-identical, full unit suite green. A six-case regression
    guard asserts the embedded-image count tracks distinct charts.
-2. **Emit chart images as JPEG where the chart is opaque.** Same 300-page
-   comparison: PNG 320 MB peak vs JPEG 204 MB. This is Floor's own documented
-   cover rule, not yet applied to `chart-renderer`.
+2. ~~**Emit chart images as JPEG where the chart is opaque.**~~
+   **Withdrawn — measured against Floor's real chart pipeline and it does not
+   apply.** The 300-page synthetic comparison (PNG 320 MB peak vs JPEG 204 MB)
+   embedded a *distinct* alpha PNG on every page. Floor's charts are not shaped
+   that way, and the difference is decisive:
+
+   - Charts are written to disk and passed to `doc.image()` as **file paths**
+     (`chart-renderer.service.ts` `renderChartToFile`). PDFKit's
+     `_imageRegistry` *is* keyed by path, so each distinct chart is parsed and
+     embedded exactly once no matter how many pages draw it. Measured: 120
+     draws of one path produce **1-2 image XObjects**, and going from 1 page to
+     120 pages costs **+2 MB and +53 KB**, not 120x anything.
+   - There are ~13 project-level charts plus roughly one per block / type, not
+     one per page.
+
+   So the cost is per *distinct* chart, and measured at Floor's largest chart
+   size (1040x480) one RGBA embed costs **4 MB transient**. Across a few dozen
+   charts that is real but modest, and it is **transient, not retained**.
+   Meanwhile JPEG makes these charts *larger*: the same image was 3,169 B as an
+   RGBA PNG and 41,034 B as JPEG (13x bigger), because charts are flat-colour
+   line art, which PNG compresses far better than JPEG. Converting would trade
+   a few MB of transient RSS for a much larger file and visible artefacts on
+   text and thin lines.
+
+   The cover rule in Floor's `export-engine-infra.md` still stands and is still
+   correctly applied: it is about **full-bleed photographic backgrounds**
+   (a 2133x3018 RGBA cover cost ~290 MB), which is a different kind of image.
+   Generalizing it to charts was my error, from a probe whose per-page shape
+   did not match the code.
+
+   Probe: `apps/backend/scripts/bench/unit-gauge-dedupe/chart-format.ts`.
 3. ~~**Add a regression guard.**~~ **Done** alongside step 1
    (`test/unit/.../shared/unit-gauge.cache.spec.ts`). It asserts the count of
    images PDFKit actually embedded, not the cache's own `size` — re-`set`ting
