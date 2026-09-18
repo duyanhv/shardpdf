@@ -380,16 +380,19 @@ test("maxDecompressedBytes bounds shard parsing (zip bomb)", async () => {
   await writeFile(bombPath, buildBombPdf(32 * 1024 * 1024));
   assert.ok((await stat(bombPath)).size < 512 * 1024);
 
-  // Unbounded: a legal one-page document.
+  // Unbounded: a legal one-page document -- and it pays the full inflation
+  // cost, which is the baseline the bounded load is compared against.
   const unboundedOut = path.join(workDir, "bomb-unbounded.pdf");
+  const unboundedStarted = performance.now();
   const unbounded = await assemble({
     shards: [bombPath],
     outputPath: unboundedOut,
   });
+  const unboundedElapsed = performance.now() - unboundedStarted;
   assert.equal(unbounded.pageCount, 1);
 
   // Bounded: the oversized object stream is skipped, shard has no pages.
-  const started = performance.now();
+  const boundedStarted = performance.now();
   await assert.rejects(
     assemble({
       shards: [bombPath],
@@ -398,7 +401,18 @@ test("maxDecompressedBytes bounds shard parsing (zip bomb)", async () => {
     }),
     { code: "SHARDPDF_MALFORMED" },
   );
-  assert.ok(performance.now() - started < 200, "bounded load did not inflate");
+  const boundedElapsed = performance.now() - boundedStarted;
+
+  // Compare the two loads rather than asserting an absolute budget. An earlier
+  // version required the bounded load to finish within 200 ms, which failed
+  // intermittently on a loaded machine while the code was working correctly.
+  // The ratio holds on any machine: inflating 32 MiB is far more work than
+  // skipping it. Same reasoning as the Rust twin in assembler.rs.
+  assert.ok(
+    boundedElapsed * 4 < unboundedElapsed,
+    `bounded load (${boundedElapsed.toFixed(1)}ms) should be far cheaper than ` +
+      `the inflating load (${unboundedElapsed.toFixed(1)}ms); it likely inflated`,
+  );
 
   // Same on the low-level class and on extractPages.
   const low = new Assembly(path.join(workDir, "bomb-low.partial"), {
