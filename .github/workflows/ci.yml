@@ -49,10 +49,15 @@ jobs:
       - name: Orchestrator tests
         working-directory: packages/orchestrator
         run: node --test "test/*.test.ts"
+      - name: PDFKit adapter tests
+        working-directory: packages/adapter-pdfkit
+        run: node --test "test/adapter.test.ts" "test/dedupe-control.test.ts"
       - name: Install CJK font for the Floor acceptance check
         run: sudo apt-get install -y fonts-noto-cjk
       - name: Consumer smoke (packed tarball, Node + Bun, CJS + ESM, types, Floor acceptance)
         run: bun run smoke:consumer
+      - name: Adapter consumer smoke (packed tarballs consumed from outside the workspace)
+        run: bun run smoke:adapter
 
   prebuild:
     name: Prebuild ${{ matrix.target }}
