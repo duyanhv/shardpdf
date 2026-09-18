@@ -7,9 +7,22 @@ cgroup limit. It does, and more sharply than on macOS.
 
 ## Result
 
-`node:24-bookworm-slim` (glibc, matching Floor's host, not Alpine/musl),
-linux/arm64, Node 24.21, pdfkit 0.20.2, canvas 3.2.3, 120 pages drawing from 6
-distinct gauges. One mode per container.
+`node:24-bookworm-slim` (glibc, matching Floor's host, not Alpine/musl), Node
+24.21, pdfkit 0.20.2, canvas 3.2.3, 120 pages drawing from 6 distinct gauges.
+One mode per container. Run on **both** architectures: arm64 native, and x86_64
+(Floor's EC2 architecture) through Rosetta.
+
+### x86_64 — Floor's production architecture
+
+| cap | naive | cached |
+| --- | --- | --- |
+| 300 MB | cgroup peak **228 MB**, RSS Δ89 MB, 3,216 ms | cgroup peak **81 MB**, RSS Δ14 MB, 485 ms |
+| 200 MB | **OOM-killed (exit 137)** | cgroup peak **129 MB** |
+| 150 MB | **OOM-killed (exit 137)** | cgroup peak **83 MB** |
+| 120 MB | **OOM-killed (exit 137)** | cgroup peak **83 MB** |
+| 100 MB | **OOM-killed (exit 137)** | cgroup peak **84 MB** |
+
+### arm64
 
 | cap | naive | cached |
 | --- | --- | --- |
@@ -18,20 +31,24 @@ distinct gauges. One mode per container.
 | 150 MB | **OOM-killed (exit 137)** | cgroup peak **45 MB**, 161 ms |
 | 120 MB | **OOM-killed (exit 137)** | cgroup peak **45 MB**, 121 ms |
 
-Also constant across every run: image XObjects **240 → 12**, rasterizations
-**120 → 6**, output **2,305,712 → 166,465 B**, and ~10x on wall clock.
+Identical on both: image XObjects **240 → 12**, rasterizations **120 → 6**,
+output **2,305,712 → 166,465 B**, and ~7-10x on wall clock.
 
-**The naive path is OOM-killed by the kernel at a 150 MB cap; the cached path
-completes at 120 MB using 45 MB.** That is a qualitative difference the macOS
+**On x86_64 the naive path is OOM-killed at a 200 MB cap; the cached path
+completes at 100 MB using 84 MB.** The pre-fix path fails *earlier* on x86_64
+than on arm64 (200 MB vs 150 MB), so the arm64 figures were the optimistic
+case, not the pessimistic one. This is a qualitative difference the macOS
 measurements could not show, because nothing enforced a limit there.
 
-Rendering is **pixel-identical** on Linux too: pages 1, 60 and 120 rasterized
-with `pdftoppm` are byte-identical between the two arms.
+Rendering is **pixel-identical** on both architectures: pages 1, 60 and 120
+rasterized with `pdftoppm` are byte-identical between the two arms.
 
 ## Running it
 
 ```bash
 docker build -t gauge-linux-verify .
+# and on Floor's production architecture:
+docker build --platform linux/amd64 -t gauge-linux-amd64 .
 
 # one mode per container: running both in one process lets the second arm
 # inherit the heap the first grew, which made its RSS delta read as ~0
@@ -56,9 +73,11 @@ a memory-starved instance instead of thrashing.
 
 ## Caveats
 
-- **arm64, not x86_64.** Floor's EC2 host is x86_64; this is Apple Silicon
-  Docker. Allocator behaviour is close but not identical, so treat the OOM
-  threshold as indicative rather than an exact production number.
+- **x86_64 here is Rosetta, not bare metal.** The binaries, glibc, V8 build and
+  page size (4 KB) are genuinely x86_64, which is what drives the allocator and
+  GC behaviour being measured; the CPU is emulated, which inflates wall clock
+  (3.2 s vs 1.6 s for the same work) but does not change memory accounting.
+  Treat the memory figures as representative and the timings as arm64's.
 - **Reproduces the two code paths rather than importing Floor.** Floor's
   renderer needs its snapshot types and Korean fonts; the probe matches the
   gauge geometry, canvas size (430x180, `BLOCK_AVG_BAR_CHART`) and grade

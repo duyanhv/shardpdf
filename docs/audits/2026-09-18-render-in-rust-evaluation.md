@@ -206,21 +206,28 @@ Everything above is macOS and uncapped. Re-run on `node:24-bookworm-slim`
 (glibc, matching Floor's Debian EC2 host) under Docker memory limits, the
 conclusion holds and sharpens into a qualitative difference:
 
-| cgroup cap | naive | cached |
-| --- | --- | --- |
-| 300 MB | peak **300 MB** (at the cap) | peak **54 MB** |
-| 200 MB | peak **200 MB** (at the cap) | peak **82 MB** |
-| 150 MB | **OOM-killed, exit 137** | peak **45 MB** |
-| 120 MB | **OOM-killed, exit 137** | peak **45 MB** |
+Run on **both** architectures, including x86_64, which is what Floor's EC2
+host runs:
 
-**The pre-fix path is killed by the kernel OOM killer at a 150 MB cap; the
-fixed path completes at 120 MB using 45 MB.** Uncapped macOS measurement could
-not show this, because nothing was enforcing a limit. Rendering is
-pixel-identical on Linux as well (pages 1, 60, 120 rasterized with `pdftoppm`,
-byte-identical).
+| cgroup cap | naive (x86_64) | cached (x86_64) | naive (arm64) | cached (arm64) |
+| --- | --- | --- | --- | --- |
+| 300 MB | peak 228 MB | peak **81 MB** | peak 300 MB (at cap) | peak **54 MB** |
+| 200 MB | **OOM, exit 137** | peak **129 MB** | peak 200 MB (at cap) | peak **82 MB** |
+| 150 MB | **OOM, exit 137** | peak **83 MB** | **OOM, exit 137** | peak **45 MB** |
+| 120 MB | **OOM, exit 137** | peak **83 MB** | **OOM, exit 137** | peak **45 MB** |
+| 100 MB | **OOM, exit 137** | peak **84 MB** | — | — |
 
-Caveat: arm64 Docker, not Floor's x86_64 EC2, so the exact OOM threshold is
-indicative rather than a production number. Probe and full results:
+**On Floor's architecture the pre-fix path is killed by the kernel OOM killer
+at a 200 MB cap, while the fixed path completes at 100 MB using 84 MB.**
+Uncapped macOS measurement could not show this, because nothing was enforcing a
+limit. Note the pre-fix path fails *earlier* on x86_64 than on arm64, so the
+arm64 numbers were the optimistic case. Rendering is pixel-identical on both
+(pages 1, 60, 120 via `pdftoppm`, byte-identical).
+
+Caveat: x86_64 here is Rosetta. The binaries, glibc, V8 build and 4 KB page
+size are genuinely x86_64 — which is what drives the memory behaviour being
+measured — but the CPU is emulated, so the wall-clock figures are inflated and
+the arm64 timings are the ones to quote. Probe and full results:
 `docs/benchmarks/probes/2026-09-18-render-cost/linux-cap/`.
 
 Note that `memo` alone (caching the Buffer) recovers the rasterization but
@@ -443,12 +450,11 @@ node ffi-bench.mjs 9
 ## 7. Caveats
 
 - Most figures here are Apple Silicon and uncapped. The gauge-dedupe result has
-  since been re-measured on Linux (glibc) under real cgroup caps, where it holds
-  and sharpens: the pre-fix path is OOM-killed at 150 MB while the fixed path
-  runs in 45 MB (§3). That run is arm64 Docker rather than Floor's x86_64 EC2,
-  so the exact OOM threshold is indicative. The FFI and per-page-slope numbers
-  in §2 and §4 remain macOS-only; their ratios should hold, but absolute
-  MB/page and ns/call should be re-measured on the target before being quoted.
+  since been re-measured on Linux (glibc) under real cgroup caps, on both arm64
+  and x86_64, where it holds and sharpens into an OOM threshold (§3). The FFI
+  and per-page-slope numbers in §2 and §4 remain macOS-only; their ratios should
+  hold, but absolute MB/page and ns/call should be re-measured on the target
+  before being quoted.
 - The Floor-shaped page in these probes is synthetic: 6 cards, 8 table rows,
   a footer, Korean labels, one gauge. It reproduces the measured call census
   (713 calls/page, 452 measurements) but is not a real report. The canvas
