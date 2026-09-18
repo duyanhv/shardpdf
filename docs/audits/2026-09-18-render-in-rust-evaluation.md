@@ -308,7 +308,8 @@ per page. Same language, opposite economics.
 
 ## 5. Recommendation
 
-**Do this first (JS only, hours of work, pixel-identical):**
+**Do this first (JS only, hours of work, pixel-identical).** Steps 1 and 3
+have since shipped; step 2 has not.
 
 1. ~~**Memoize the per-page gauge by `(grade, profile)` and hand pdfkit a
    dedupable handle.**~~ **Done** in Floor `87c5535ef`: a per-document cache
@@ -319,9 +320,14 @@ per page. Same language, opposite economics.
 2. **Emit chart images as JPEG where the chart is opaque.** Same 300-page
    comparison: PNG 320 MB peak vs JPEG 204 MB. This is Floor's own documented
    cover rule, not yet applied to `chart-renderer`.
-3. **Add a regression guard.** Assert the image-XObject count in a rendered
-   chunk is bounded by the distinct-chart count, not the page count. This is the
-   check that would have caught the issue: it is invisible to `qpdf --check`.
+3. ~~**Add a regression guard.**~~ **Done** alongside step 1
+   (`test/unit/.../shared/unit-gauge.cache.spec.ts`). It asserts the count of
+   images PDFKit actually embedded, not the cache's own `size` — re-`set`ting
+   one Map key leaves the size unchanged while still embedding a copy per call,
+   so the obvious assertion would have been vacuous. Two of its six cases fail
+   if the cache is bypassed, verified by mutation. This is the check that would
+   have caught the original issue: it is invisible to `qpdf --check`, which
+   passes on both the 240-object and 10-object documents.
 
 Then re-measure. My estimate is that the per-page slope lands near
 **0.05-0.10 MB/page**, which makes the 12,000-page ceiling a wall-clock
